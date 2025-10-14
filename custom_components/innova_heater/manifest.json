@@ -4,6 +4,7 @@
   "codeowners": ["@mijgame"],
   "config_flow": true,
   "documentation": "https://github.com/mijgame/innova_cloud",
+  "issue_tracker": "https://github.com/mijgame/innova_cloud/issues",
   "integration_type": "device",
   "iot_class": "cloud_push",
   "requirements": ["grpcio>=1.72.1", "protobuf>=6.30.0"],
