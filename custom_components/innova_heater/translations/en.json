@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Innova Cloud Setup",
+        "description": "Enter your Innova account credentials",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "device": {
+        "title": "Select Device",
+        "description": "Choose your device and specify its model type",
+        "data": {
+          "mac_address": "Device",
+          "device_type": "Device Model"
+        },
+        "data_description": {
+          "device_type": "Select your device model (Fancoil/Osmo supports Auto/Heat/Cool only, no Dry mode)"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password",
+      "no_devices": "No devices found on your account",
+      "unknown": "Unexpected error occurred"
+    },
+    "abort": {
+      "already_configured": "Device is already configured"
+    }
+  }
+}

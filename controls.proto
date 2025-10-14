@@ -1,0 +1,181 @@
+syntax = "proto3";
+package device_controls;
+
+import "google/protobuf/empty.proto";
+
+// Controls service for device operations
+service Controls {
+  rpc GetDeviceStatus(google.protobuf.Empty) returns (GetDeviceStatusResponse);
+  rpc SetDeviceValue(SetDeviceValueRequest) returns (google.protobuf.Empty);
+  rpc SubscribeToDeviceEvents(google.protobuf.Empty) returns (stream Event);
+}
+
+// Request message for setting device values
+message SetDeviceValueRequest {
+  int32 type = 1;
+  int32 value = 2;
+}
+
+// Response message for getting device status
+message GetDeviceStatusResponse {
+  IotStatus iot_status = 1;
+  MainStatus main_status = 2;
+}
+
+// Event message for subscriptions
+message Event {
+  int32 type = 1;
+  bytes value = 2;
+}
+
+// Temperature setpoint status with constraints
+message SetpointStatus {
+  int32 value = 1;
+  int32 min = 2;
+  int32 max = 3;
+  int32 step = 4;
+  int32 offset = 5;
+}
+
+// Calendar scheduling status
+message CalendarStatus {
+  bool is_active = 1;
+  int32 override_until_minutes_epoch = 2;
+}
+
+// Main device status
+message MainStatus {
+  int32 fw_version = 1;
+  string serial_number = 2;
+  bytes alarms = 3;
+  oneof device_status {
+    DuepuntozeroStatus duepuntozero_status = 4;
+    M7Status m7_status = 5;
+    FancoilStatus fancoil_status = 6;
+    WaterloopStatus waterloop_status = 7;
+  }
+}
+
+// Status for Duepuntozero devices
+message DuepuntozeroStatus {
+  CalendarStatus calendar = 1;
+  bool power_state = 2;
+  SetpointStatus temperature_setpoint = 3;
+  int32 room_temperature = 4;
+  int32 operation_mode = 5;
+  int32 fan_speed = 6;
+  int32 flap = 7;
+  bool hotel_mode = 8;
+  bool keyboard_lock = 9;
+  int32 mode_lock = 10;
+  bool has_uv_lamp = 11;
+  bool uv_lamp = 12;
+  int32 temperature_unit = 13;
+  bool has_air_exchange = 14;
+  bool air_exchange = 15;
+  bool has_bms = 16;
+  bytes additional_data = 17;
+}
+
+// Status for M7 devices  
+message M7Status {
+  CalendarStatus calendar = 1;
+  bool power_state = 2;
+  int32 active_setpoint_type = 3;
+  SetpointStatus temperature_setpoint = 4;
+  bool has_air_quality = 5;
+  SetpointStatus air_quality_setpoint = 6;
+  bool has_air_humidity = 7;
+  SetpointStatus air_humidity_setpoint = 8;
+  int32 room_temperature = 9;
+  int32 operation_mode = 10;
+  int32 fan_speed = 11;
+  bool has_flap = 12;
+  int32 flap = 13;
+  bool hotel_mode = 14;
+  bool has_uv_lamp = 15;
+  bool uv_lamp = 16;
+  int32 temperature_unit = 17;
+  bool has_air_exchange = 18;
+  bool air_exchange = 19;
+  bool has_bms = 20;
+  int32 managed_device_type = 21;
+  bytes additional_data = 22;
+}
+
+// Status for Fancoil devices
+message FancoilStatus {
+  CalendarStatus calendar = 1;
+  bool power_state = 2;
+  SetpointStatus temperature_setpoint = 3;
+  int32 room_temperature = 4;
+  int32 operation_mode = 5;
+  int32 fan_speed = 6;
+  int32 flap = 7;
+  bool has_flap = 8;
+  bool hotel_mode = 9;
+  bool keyboard_lock = 10;
+  int32 mode_lock = 11;
+  bool has_uv_lamp = 12;
+  bool uv_lamp = 13;
+  int32 temperature_unit = 14;
+  bool has_bms = 15;
+  bytes additional_data = 16;
+}
+
+// Status for Waterloop devices
+message WaterloopStatus {
+  CalendarStatus calendar = 1;
+  bool power_state = 2;
+  SetpointStatus temperature_setpoint = 3;
+  int32 room_temperature = 4;
+  int32 operation_mode = 5;
+  int32 fan_speed = 6;
+  bool hotel_mode = 7;
+  bool keyboard_lock = 8;
+  int32 mode_lock = 9;
+  bool has_uv_lamp = 10;
+  bool uv_lamp = 11;
+  int32 temperature_unit = 12;
+  bool has_bms = 13;
+  bytes additional_data = 14;
+}
+
+// IoT hardware status
+message IotStatus {
+  int32 fw_version = 1;
+  bytes alarms = 2;
+  
+  enum PowerSupplyType {
+    EXTERNAL = 0;
+    BATTERY = 1;
+  }
+  PowerSupplyType power_supply_type = 3;
+  
+  BatteryStatus battery_status = 4;
+  
+  oneof connection_status {
+    WiFiStatus wifi = 5;
+    EthernetStatus ethernet = 6;
+    ThreadStatus thread = 7;
+  }
+  
+  message BatteryStatus {
+    int32 percentage = 1;
+    bool is_charging = 2;
+    bool is_faulty = 3;
+  }
+  
+  message WiFiStatus {
+    string ssid = 1;
+    int32 rssi = 2;
+  }
+  
+  message EthernetStatus {
+    // Empty - just indicates Ethernet connection
+  }
+  
+  message ThreadStatus {
+    // Empty - just indicates Thread connection
+  }
+}

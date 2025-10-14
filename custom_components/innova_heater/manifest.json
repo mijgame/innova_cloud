@@ -1,0 +1,11 @@
+{
+  "domain": "innova_heater",
+  "name": "Innova Cloud",
+  "codeowners": ["@mijgame"],
+  "config_flow": true,
+  "documentation": "https://github.com/mijgame/innova_cloud",
+  "integration_type": "device",
+  "iot_class": "cloud_push",
+  "requirements": ["grpcio>=1.72.1", "protobuf>=6.30.0"],
+  "version": "1.0.0"
+}
