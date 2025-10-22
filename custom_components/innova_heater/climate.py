@@ -189,7 +189,6 @@ class InnovaHeaterClimate(CoordinatorEntity, ClimateEntity):
             return
 
         await self.coordinator.async_set_temperature(temperature)
-        await self.coordinator.async_request_refresh()
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set new HVAC mode."""
@@ -204,8 +203,6 @@ class InnovaHeaterClimate(CoordinatorEntity, ClimateEntity):
             if hvac_mode in self.OPERATION_MODE_MAP:
                 operation_mode = self.OPERATION_MODE_MAP[hvac_mode]
                 await self.coordinator.async_set_operation_mode(operation_mode)
-        
-        await self.coordinator.async_request_refresh()
     
     @property
     def fan_mode(self) -> str | None:
@@ -233,7 +230,6 @@ class InnovaHeaterClimate(CoordinatorEntity, ClimateEntity):
         
         if fan_mode in fan_speed_map:
             await self.coordinator.async_set_fan_speed(fan_speed_map[fan_mode])
-            await self.coordinator.async_request_refresh()
 
     async def async_turn_on(self) -> None:
         """Turn the entity on."""

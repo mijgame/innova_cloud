@@ -67,4 +67,3 @@ class InnovaHeaterFlapNumber(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Set new flap position."""
         await self.coordinator.async_set_flap(int(value))
-        await self.coordinator.async_request_refresh()

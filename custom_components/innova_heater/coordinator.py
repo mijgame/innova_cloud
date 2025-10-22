@@ -240,17 +240,28 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
         
         _LOGGER.info("Starting event listener for MAC: %s", self.mac_address)
         
+        retry_delay = 5  # Start with 5 seconds
+        max_retry_delay = 60  # Max 60 seconds between retries
+        
         while True:
             try:
                 _LOGGER.debug("Subscribing to device events...")
                 empty = empty_pb2.Empty()
                 async for event in self.stub.SubscribeToDeviceEvents(empty, metadata=metadata):
                     await self._process_event(event)
+                    # Reset retry delay on successful event processing
+                    retry_delay = 5
                     
+            except asyncio.CancelledError:
+                _LOGGER.info("Event listener cancelled")
+                break
             except Exception as err:
-                _LOGGER.error("Event stream error: %s", err)
-                await asyncio.sleep(5)  # Wait before reconnecting
-                _LOGGER.debug("Reconnecting to event stream...")
+                _LOGGER.error("Event stream error: %s", err, exc_info=True)
+                _LOGGER.info("Reconnecting to event stream in %d seconds...", retry_delay)
+                await asyncio.sleep(retry_delay)
+                
+                # Exponential backoff with max limit
+                retry_delay = min(retry_delay * 2, max_retry_delay)
 
     async def _process_event(self, event):
         """Process incoming event and update data."""
@@ -301,7 +312,8 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
                     self.data["power_state"] = True
                 
                 _LOGGER.debug("Updated data: %s", self.data)
-                self.async_set_updated_data(self.data)
+                # Create a new dict copy to ensure Home Assistant detects the change
+                self.async_set_updated_data(dict(self.data))
 
     async def _async_update_data(self):
         """Fetch data from device - data comes from initial fetch + event stream."""
@@ -332,6 +344,11 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
                 value=temp_value
             )
             
+            # Optimistic update - immediately update local state
+            self.data["target_temp"] = temperature
+            self.async_set_updated_data(dict(self.data))
+            _LOGGER.debug("Optimistically updated target temp to %.1f°C", temperature)
+            
             await self.stub.SetDeviceValue(request, metadata=metadata)
             _LOGGER.info("Set temperature to %.1f°C (value=%d)", temperature, temp_value)
             
@@ -351,6 +368,11 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
                 type=OP_TYPE_POWER_STATE,
                 value=1 if power_on else 0
             )
+            
+            # Optimistic update - immediately update local state
+            self.data["power_state"] = power_on
+            self.async_set_updated_data(dict(self.data))
+            _LOGGER.debug("Optimistically updated power state to %s", power_on)
             
             await self.stub.SetDeviceValue(request, metadata=metadata)
             _LOGGER.info("Set power state to %s", "ON" if power_on else "OFF")
@@ -372,6 +394,11 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
                 value=mode
             )
             
+            # Optimistic update - immediately update local state
+            self.data["operation_mode"] = mode
+            self.async_set_updated_data(dict(self.data))
+            _LOGGER.debug("Optimistically updated operation mode to %d", mode)
+            
             await self.stub.SetDeviceValue(request, metadata=metadata)
             _LOGGER.info("Set operation mode to %d", mode)
             
@@ -391,6 +418,11 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
                 type=OP_TYPE_FAN_SPEED,
                 value=speed
             )
+            
+            # Optimistic update - immediately update local state
+            self.data["fan_speed"] = speed
+            self.async_set_updated_data(dict(self.data))
+            _LOGGER.debug("Optimistically updated fan speed to %d", speed)
             
             await self.stub.SetDeviceValue(request, metadata=metadata)
             _LOGGER.info("Set fan speed to %d", speed)
@@ -416,6 +448,11 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
                 value=position
             )
             
+            # Optimistic update - immediately update local state
+            self.data["flap"] = position
+            self.async_set_updated_data(dict(self.data))
+            _LOGGER.debug("Optimistically updated flap position to %d", position)
+            
             await self.stub.SetDeviceValue(request, metadata=metadata)
             _LOGGER.info("Set flap position to %d", position)
             
@@ -425,7 +462,20 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
 
     async def async_shutdown(self):
         """Shutdown coordinator."""
-        if self._event_task:
+        _LOGGER.info("Shutting down coordinator for MAC: %s", self.mac_address)
+        
+        if self._event_task and not self._event_task.done():
             self._event_task.cancel()
+            try:
+                await self._event_task
+            except asyncio.CancelledError:
+                _LOGGER.debug("Event task cancelled successfully")
+            except Exception as err:
+                _LOGGER.warning("Error while cancelling event task: %s", err)
+        
         if self.channel:
-            await self.channel.close()
+            try:
+                await self.channel.close()
+                _LOGGER.debug("gRPC channel closed")
+            except Exception as err:
+                _LOGGER.warning("Error while closing channel: %s", err)
