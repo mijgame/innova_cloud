@@ -62,7 +62,7 @@ class InnovaHeaterFlapNumber(CoordinatorEntity, NumberEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.data.get("has_flap", False)
+        return super().available and self.coordinator.data.get("has_flap", False)
     
     async def async_set_native_value(self, value: float) -> None:
         """Set new flap position."""

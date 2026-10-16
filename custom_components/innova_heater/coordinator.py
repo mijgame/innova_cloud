@@ -4,13 +4,17 @@ import logging
 import struct
 from datetime import timedelta
 
+import aiohttp
 import grpc
 from google.protobuf import empty_pb2
 
+from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.config_entries import ConfigEntry
 
+from .api import validate_login
 from .const import (
     DOMAIN,
     GRPC_HOST,
@@ -32,10 +36,16 @@ from .const import (
     OP_TYPE_OPERATION_MODE,
     OP_TYPE_FAN_SPEED,
     OP_TYPE_FLAP,
+    OP_TYPE_REBOOT,
 )
 from . import controls_pb2, controls_pb2_grpc
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _is_auth_error(err: Exception) -> bool:
+    """Return True if the gRPC error means our token is invalid/expired."""
+    return isinstance(err, grpc.aio.AioRpcError) and err.code() == grpc.StatusCode.UNAUTHENTICATED
 
 
 class InnovaHeaterCoordinator(DataUpdateCoordinator):
@@ -44,7 +54,9 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize coordinator."""
         _LOGGER.info("Initializing InnovaHeaterCoordinator for MAC: %s", entry.data.get("mac_address"))
-        
+
+        # Events push changes in real time; the periodic poll re-syncs the full
+        # status so missed events or ignored commands don't leave HA out of sync.
         super().__init__(
             hass,
             _LOGGER,
@@ -57,8 +69,9 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
         self.channel = None
         self.stub = None
         self._event_task = None
+        self._token_lock = asyncio.Lock()
         self._initial_data_received = False
-        
+
         # Initialize with default data
         self.data = {
             "current_temp": None,
@@ -73,6 +86,7 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
             "has_flap": False,
             "calendar_active": None,
             "keyboard_lock": None,
+            "mode_lock": None,
             "hotel_mode": None,
             "temperature_unit": None,
             "wifi_ssid": None,
@@ -81,195 +95,197 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
             "fw_version": None,
             "serial_number": None,
         }
-        
-        _LOGGER.info("Coordinator initialized with MAC: %s, Token: %s...", self.mac_address, self.token[:20] if self.token else "None")
 
-    async def _async_setup(self):
-        """Set up the gRPC connection."""
-        try:
-            credentials = grpc.ssl_channel_credentials()
-            self.channel = grpc.aio.secure_channel(
-                f"{GRPC_HOST}:{GRPC_PORT}",
-                credentials
-            )
-            self.stub = controls_pb2_grpc.ControlsStub(self.channel)
-            
-            # Fetch initial device status using blocking call (like the app does)
-            await self._fetch_initial_status()
-            
-            # Start event listener for real-time updates
-            self._event_task = asyncio.create_task(self._listen_events())
-            
-        except Exception as err:
-            _LOGGER.error("Failed to setup gRPC connection: %s", err)
-            raise UpdateFailed(f"Setup failed: {err}")
-    
-    async def _fetch_initial_status(self):
-        """Fetch initial device status."""
-        try:
-            metadata = [
-                ("mac_address", self.mac_address),
-                ("authorization", f"Bearer {self.token}"),
-            ]
-            
-            _LOGGER.info("Fetching initial device status for MAC: %s", self.mac_address)
-            empty = empty_pb2.Empty()
-            
-            # Call GetDeviceStatus
-            status = await self.stub.GetDeviceStatus(empty, metadata=metadata)
-            
-            if not status.HasField('main_status'):
-                _LOGGER.warning("No main_status in response")
-                return
-            
-            main = status.main_status
-            
-            # Store serial number
-            if main.serial_number:
-                self.data["serial_number"] = main.serial_number
-                _LOGGER.info("Device serial: %s", main.serial_number)
-            
-            _LOGGER.info("Device FW version: %s", main.fw_version if hasattr(main, 'fw_version') else "unknown")
-            
-            # Check which device type (using oneof field)
-            device_status = None
-            device_type = main.WhichOneof('device_status')
-            
-            if device_type == 'fancoil_status':
-                device_status = main.fancoil_status
-            elif device_type == 'm7_status':
-                device_status = main.m7_status
-            elif device_type == 'duepuntozero_status':
-                device_status = main.duepuntozero_status
-            elif device_type == 'waterloop_status':
-                device_status = main.waterloop_status
-            
-            if device_status:
-                _LOGGER.info("Device type: %s", device_type)
-                
-                # Parse available fields
-                if hasattr(device_status, 'power_state'):
-                    self.data["power_state"] = device_status.power_state
-                    _LOGGER.debug("Initial power state: %s", self.data["power_state"])
-                
-                if hasattr(device_status, 'room_temperature') and device_status.room_temperature > 0:
-                    self.data["current_temp"] = device_status.room_temperature / 10.0
-                    _LOGGER.debug("Initial current temp: %s°C", self.data["current_temp"])
-                    self._initial_data_received = True
-                
-                if hasattr(device_status, 'temperature_setpoint') and device_status.HasField('temperature_setpoint'):
-                    setpoint = device_status.temperature_setpoint
-                    self.data["target_temp"] = setpoint.value / 10.0
-                    self.data["min_temp"] = setpoint.min / 10.0 if setpoint.min > 0 else 5.0
-                    self.data["max_temp"] = setpoint.max / 10.0 if setpoint.max > 0 else 40.0
-                    self.data["target_temp_step"] = setpoint.step / 10.0 if setpoint.step > 0 else 0.5
-                    _LOGGER.debug("Initial target temp: %s°C (range: %s-%s°C, step: %s°C)", 
-                                self.data["target_temp"], self.data["min_temp"], 
-                                self.data["max_temp"], self.data["target_temp_step"])
-                
-                if hasattr(device_status, 'operation_mode'):
-                    self.data["operation_mode"] = device_status.operation_mode
-                    _LOGGER.debug("Initial operation mode: %s", self.data["operation_mode"])
-                
-                if hasattr(device_status, 'fan_speed'):
-                    self.data["fan_speed"] = device_status.fan_speed
-                    _LOGGER.debug("Initial fan speed: %s", self.data["fan_speed"])
-                
-                # Additional device features
-                if hasattr(device_status, 'flap'):
-                    self.data["flap"] = device_status.flap
-                    _LOGGER.debug("Initial flap position: %s", self.data["flap"])
-                
-                if hasattr(device_status, 'has_flap'):
-                    self.data["has_flap"] = device_status.has_flap
-                
-                if hasattr(device_status, 'keyboard_lock'):
-                    self.data["keyboard_lock"] = device_status.keyboard_lock
-                    _LOGGER.debug("Keyboard lock: %s", self.data["keyboard_lock"])
-                
-                if hasattr(device_status, 'hotel_mode'):
-                    self.data["hotel_mode"] = device_status.hotel_mode
-                    _LOGGER.debug("Hotel mode: %s", self.data["hotel_mode"])
-                
-                if hasattr(device_status, 'temperature_unit'):
-                    self.data["temperature_unit"] = device_status.temperature_unit
-                    _LOGGER.debug("Temperature unit: %s", self.data["temperature_unit"])
-                
-                # Calendar status
-                if hasattr(device_status, 'calendar') and device_status.HasField('calendar'):
-                    calendar = device_status.calendar
-                    self.data["calendar_active"] = calendar.is_active
-                    _LOGGER.debug("Calendar active: %s", self.data["calendar_active"])
-                
-                _LOGGER.debug("Initial status loaded: %s", self.data)
-            else:
-                _LOGGER.debug("GetDeviceStatus returned minimal data, waiting for events...")
-            
-            # Parse IoT status (WiFi, firmware, etc.)
-            if status.HasField('iot_status'):
-                iot = status.iot_status
-                
-                if iot.fw_version:
-                    self.data["fw_version"] = iot.fw_version
-                    _LOGGER.debug("IoT FW version: %s", iot.fw_version)
-                
-                # Check connection type
-                if iot.HasField('wifi'):
-                    self.data["connection_type"] = "WiFi"
-                    self.data["wifi_ssid"] = iot.wifi.ssid
-                    self.data["wifi_rssi"] = iot.wifi.rssi
-                    _LOGGER.debug("WiFi: %s (RSSI: %d dBm)", iot.wifi.ssid, iot.wifi.rssi)
-                elif iot.HasField('ethernet'):
-                    self.data["connection_type"] = "Ethernet"
-                    _LOGGER.debug("Connection: Ethernet")
-                elif iot.HasField('thread'):
-                    self.data["connection_type"] = "Thread"
-                    _LOGGER.debug("Connection: Thread")
-                
-        except Exception as err:
-            _LOGGER.error("Failed to fetch initial status: %s", err)
-            import traceback
-            _LOGGER.error("Traceback: %s", traceback.format_exc())
-
-    async def _listen_events(self):
-        """Listen to device events in background."""
-        metadata = [
+    def _metadata(self) -> list[tuple[str, str]]:
+        """Build gRPC call metadata with the current token."""
+        return [
             ("mac_address", self.mac_address),
             ("authorization", f"Bearer {self.token}"),
         ]
-        
+
+    async def _async_renew_token(self, failed_token: str) -> None:
+        """Log in again with the stored credentials to get a new token.
+
+        Raises ConfigEntryAuthFailed if no credentials are stored or they are rejected,
+        which makes Home Assistant ask the user to re-authenticate.
+        """
+        async with self._token_lock:
+            if self.token != failed_token:
+                # Another call already renewed the token while we were waiting
+                return
+
+            email = self.entry.data.get(CONF_EMAIL)
+            password = self.entry.data.get(CONF_PASSWORD)
+            if not email or not password:
+                raise ConfigEntryAuthFailed(
+                    "Innova Cloud token expired and no credentials are stored; please re-authenticate"
+                )
+
+            _LOGGER.info("Innova Cloud token expired, logging in again")
+            try:
+                result = await validate_login(self.hass, email, password)
+            except (aiohttp.ClientError, TimeoutError) as err:
+                raise UpdateFailed(f"Could not reach Innova Cloud to renew token: {err}") from err
+
+            if not result or not result.get("token"):
+                raise ConfigEntryAuthFailed("Innova Cloud rejected the stored credentials")
+
+            self.token = result["token"]
+            self.hass.config_entries.async_update_entry(
+                self.entry, data={**self.entry.data, "token": self.token}
+            )
+            _LOGGER.info("Innova Cloud token renewed")
+
+    async def _async_call(self, method, request):
+        """Call a unary gRPC method, renewing the token once if it has expired."""
+        token = self.token
+        try:
+            return await method(request, metadata=self._metadata())
+        except grpc.aio.AioRpcError as err:
+            if not _is_auth_error(err):
+                raise
+            await self._async_renew_token(token)
+            return await method(request, metadata=self._metadata())
+
+    async def _async_setup_channel(self):
+        """Set up the gRPC channel and start the event listener."""
+        credentials = grpc.ssl_channel_credentials()
+        self.channel = grpc.aio.secure_channel(
+            f"{GRPC_HOST}:{GRPC_PORT}",
+            credentials
+        )
+        self.stub = controls_pb2_grpc.ControlsStub(self.channel)
+
+    async def _fetch_status(self):
+        """Fetch the full device status and merge it into self.data."""
+        status = await self._async_call(self.stub.GetDeviceStatus, empty_pb2.Empty())
+
+        if not status.HasField('main_status'):
+            _LOGGER.warning("No main_status in response")
+            return
+
+        main = status.main_status
+
+        if main.serial_number:
+            self.data["serial_number"] = main.serial_number
+
+        device_type = main.WhichOneof('device_status')
+        device_status = getattr(main, device_type) if device_type else None
+
+        if device_status:
+            _LOGGER.debug("Device type: %s", device_type)
+            # Protobuf hasattr() is always True for declared fields, so check
+            # the message descriptor to see which fields this device type has.
+            fields = device_status.DESCRIPTOR.fields_by_name
+
+            if 'power_state' in fields:
+                self.data["power_state"] = device_status.power_state
+
+            if 'room_temperature' in fields and device_status.room_temperature > 0:
+                self.data["current_temp"] = device_status.room_temperature / 10.0
+                self._initial_data_received = True
+
+            if 'temperature_setpoint' in fields and device_status.HasField('temperature_setpoint'):
+                setpoint = device_status.temperature_setpoint
+                self.data["target_temp"] = setpoint.value / 10.0
+                self.data["min_temp"] = setpoint.min / 10.0 if setpoint.min > 0 else 5.0
+                self.data["max_temp"] = setpoint.max / 10.0 if setpoint.max > 0 else 40.0
+                self.data["target_temp_step"] = setpoint.step / 10.0 if setpoint.step > 0 else 0.5
+
+            if 'operation_mode' in fields:
+                self.data["operation_mode"] = device_status.operation_mode
+
+            if 'fan_speed' in fields:
+                self.data["fan_speed"] = device_status.fan_speed
+
+            if 'flap' in fields:
+                self.data["flap"] = device_status.flap
+
+            if 'has_flap' in fields:
+                self.data["has_flap"] = device_status.has_flap
+
+            if 'keyboard_lock' in fields:
+                self.data["keyboard_lock"] = device_status.keyboard_lock
+
+            if 'mode_lock' in fields:
+                self.data["mode_lock"] = device_status.mode_lock
+
+            if 'hotel_mode' in fields:
+                self.data["hotel_mode"] = device_status.hotel_mode
+
+            if 'temperature_unit' in fields:
+                self.data["temperature_unit"] = device_status.temperature_unit
+
+            if 'calendar' in fields and device_status.HasField('calendar'):
+                self.data["calendar_active"] = device_status.calendar.is_active
+        else:
+            _LOGGER.debug("GetDeviceStatus returned no device status, waiting for events...")
+
+        # Parse IoT status (WiFi, firmware, etc.)
+        if status.HasField('iot_status'):
+            iot = status.iot_status
+
+            if iot.fw_version:
+                self.data["fw_version"] = iot.fw_version
+
+            if iot.HasField('wifi'):
+                self.data["connection_type"] = "WiFi"
+                self.data["wifi_ssid"] = iot.wifi.ssid
+                self.data["wifi_rssi"] = iot.wifi.rssi
+            elif iot.HasField('ethernet'):
+                self.data["connection_type"] = "Ethernet"
+            elif iot.HasField('thread'):
+                self.data["connection_type"] = "Thread"
+
+        _LOGGER.debug("Status loaded: %s", self.data)
+
+    async def _listen_events(self):
+        """Listen to device events in background."""
         _LOGGER.info("Starting event listener for MAC: %s", self.mac_address)
-        
+
         retry_delay = 5  # Start with 5 seconds
         max_retry_delay = 60  # Max 60 seconds between retries
-        
+
         while True:
+            token = self.token
             try:
                 _LOGGER.debug("Subscribing to device events...")
                 empty = empty_pb2.Empty()
-                async for event in self.stub.SubscribeToDeviceEvents(empty, metadata=metadata):
+                async for event in self.stub.SubscribeToDeviceEvents(empty, metadata=self._metadata()):
                     await self._process_event(event)
                     # Reset retry delay on successful event processing
                     retry_delay = 5
-                    
+
             except asyncio.CancelledError:
                 _LOGGER.info("Event listener cancelled")
                 break
             except Exception as err:
-                _LOGGER.error("Event stream error: %s", err, exc_info=True)
+                if _is_auth_error(err):
+                    try:
+                        # Reconnect with the new token after the (backed-off) delay below,
+                        # so a server that keeps rejecting tokens doesn't cause a login storm
+                        await self._async_renew_token(token)
+                    except ConfigEntryAuthFailed as auth_err:
+                        _LOGGER.error("Event stream stopped: %s", auth_err)
+                        self.entry.async_start_reauth(self.hass)
+                        break
+                    except UpdateFailed as renew_err:
+                        _LOGGER.warning("%s", renew_err)
+                else:
+                    _LOGGER.error("Event stream error: %s", err, exc_info=True)
                 _LOGGER.info("Reconnecting to event stream in %d seconds...", retry_delay)
                 await asyncio.sleep(retry_delay)
-                
+
                 # Exponential backoff with max limit
                 retry_delay = min(retry_delay * 2, max_retry_delay)
 
     async def _process_event(self, event):
         """Process incoming event and update data."""
         _LOGGER.debug("Received event type=%s, value=%s", event.type, event.value.hex() if event.value else None)
-        
+
         if event.value and len(event.value) >= 2:
             value_int = struct.unpack('>H', event.value[:2])[0]
-            
+
             updated = False
             # Temperature events (Fancoil uses 253/254, legacy uses same)
             if event.type in (EVENT_TYPE_CURRENT_TEMP, EVENT_TYPE_FANCOIL_ROOM_TEMP):
@@ -304,166 +320,96 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
                 updated = True
             else:
                 _LOGGER.debug("Unknown event type: %s, value: %s", event.type, value_int)
-            
+
             if updated:
                 # Infer power state if we have temp data but no explicit power event
                 if self.data["power_state"] is None and self.data["current_temp"] is not None:
                     _LOGGER.debug("Inferring power state = ON from temp data")
                     self.data["power_state"] = True
-                
+
                 _LOGGER.debug("Updated data: %s", self.data)
                 # Create a new dict copy to ensure Home Assistant detects the change
                 self.async_set_updated_data(dict(self.data))
 
     async def _async_update_data(self):
-        """Fetch data from device - data comes from initial fetch + event stream."""
-        _LOGGER.debug("_async_update_data called, channel=%s", "initialized" if self.channel else "None")
-        
+        """Fetch the full device status; real-time changes arrive via the event stream."""
         if self.channel is None:
-            _LOGGER.debug("Channel not initialized, calling _async_setup...")
-            await self._async_setup()
-            _LOGGER.debug("_async_setup completed")
-        
-        # Data is fetched during setup and updated via event stream
-        # Just return current data
-        _LOGGER.debug("Returning current coordinator data: %s", self.data)
-        return self.data
+            await self._async_setup_channel()
+
+        try:
+            await self._fetch_status()
+        except grpc.aio.AioRpcError as err:
+            raise UpdateFailed(f"Failed to fetch device status: {err.code().name} {err.details()}") from err
+
+        if self._event_task is None or self._event_task.done():
+            self._event_task = self.entry.async_create_background_task(
+                self.hass, self._listen_events(), f"{DOMAIN}_events_{self.mac_address}"
+            )
+
+        return dict(self.data)
+
+    async def _async_set_value(self, op_type: int, value: int, key: str | None = None, new_state=None) -> None:
+        """Send a SetDeviceValue command, optimistically updating `key` to `new_state`.
+
+        If the command fails the optimistic update is rolled back, so HA does not
+        show a state the device never received.
+        """
+        request = controls_pb2.SetDeviceValueRequest(type=op_type, value=value)
+
+        if key is not None:
+            old_state = self.data.get(key)
+            self.data[key] = new_state
+            self.async_set_updated_data(dict(self.data))
+
+        try:
+            await self._async_call(self.stub.SetDeviceValue, request)
+        except Exception as err:
+            if key is not None:
+                self.data[key] = old_state
+                self.async_set_updated_data(dict(self.data))
+            if isinstance(err, ConfigEntryAuthFailed):
+                self.entry.async_start_reauth(self.hass)
+            raise HomeAssistantError(f"Innova Cloud command failed (type={op_type}, value={value}): {err}") from err
+
+        _LOGGER.debug("Sent command type=%d value=%d", op_type, value)
 
     async def async_set_temperature(self, temperature: float) -> None:
         """Set target temperature."""
-        try:
-            metadata = [
-                ("mac_address", self.mac_address),
-                ("authorization", f"Bearer {self.token}"),
-            ]
-            
-            temp_value = int(temperature * 10)
-            
-            request = controls_pb2.SetDeviceValueRequest(
-                type=OP_TYPE_SETPOINT,
-                value=temp_value
-            )
-            
-            # Optimistic update - immediately update local state
-            self.data["target_temp"] = temperature
-            self.async_set_updated_data(dict(self.data))
-            _LOGGER.debug("Optimistically updated target temp to %.1f°C", temperature)
-            
-            await self.stub.SetDeviceValue(request, metadata=metadata)
-            _LOGGER.info("Set temperature to %.1f°C (value=%d)", temperature, temp_value)
-            
-        except Exception as err:
-            _LOGGER.error("Failed to set temperature: %s", err)
-            raise
+        await self._async_set_value(OP_TYPE_SETPOINT, round(temperature * 10), "target_temp", temperature)
 
     async def async_set_power(self, power_on: bool) -> None:
         """Set power state."""
-        try:
-            metadata = [
-                ("mac_address", self.mac_address),
-                ("authorization", f"Bearer {self.token}"),
-            ]
-            
-            request = controls_pb2.SetDeviceValueRequest(
-                type=OP_TYPE_POWER_STATE,
-                value=1 if power_on else 0
-            )
-            
-            # Optimistic update - immediately update local state
-            self.data["power_state"] = power_on
-            self.async_set_updated_data(dict(self.data))
-            _LOGGER.debug("Optimistically updated power state to %s", power_on)
-            
-            await self.stub.SetDeviceValue(request, metadata=metadata)
-            _LOGGER.info("Set power state to %s", "ON" if power_on else "OFF")
-            
-        except Exception as err:
-            _LOGGER.error("Failed to set power: %s", err)
-            raise
+        await self._async_set_value(OP_TYPE_POWER_STATE, 1 if power_on else 0, "power_state", power_on)
 
     async def async_set_operation_mode(self, mode: int) -> None:
         """Set operation mode (0=Auto, 1=Heat, 2=Cool, 3=Fan, 4=Dry)."""
-        try:
-            metadata = [
-                ("mac_address", self.mac_address),
-                ("authorization", f"Bearer {self.token}"),
-            ]
-            
-            request = controls_pb2.SetDeviceValueRequest(
-                type=OP_TYPE_OPERATION_MODE,
-                value=mode
+        if self.data.get("mode_lock"):
+            _LOGGER.warning(
+                "Device reports mode_lock=%s; the operation mode change may be ignored by the device",
+                self.data["mode_lock"],
             )
-            
-            # Optimistic update - immediately update local state
-            self.data["operation_mode"] = mode
-            self.async_set_updated_data(dict(self.data))
-            _LOGGER.debug("Optimistically updated operation mode to %d", mode)
-            
-            await self.stub.SetDeviceValue(request, metadata=metadata)
-            _LOGGER.info("Set operation mode to %d", mode)
-            
-        except Exception as err:
-            _LOGGER.error("Failed to set operation mode: %s", err)
-            raise
-    
+        await self._async_set_value(OP_TYPE_OPERATION_MODE, mode, "operation_mode", mode)
+
     async def async_set_fan_speed(self, speed: int) -> None:
         """Set fan speed (device-dependent values)."""
-        try:
-            metadata = [
-                ("mac_address", self.mac_address),
-                ("authorization", f"Bearer {self.token}"),
-            ]
-            
-            request = controls_pb2.SetDeviceValueRequest(
-                type=OP_TYPE_FAN_SPEED,
-                value=speed
-            )
-            
-            # Optimistic update - immediately update local state
-            self.data["fan_speed"] = speed
-            self.async_set_updated_data(dict(self.data))
-            _LOGGER.debug("Optimistically updated fan speed to %d", speed)
-            
-            await self.stub.SetDeviceValue(request, metadata=metadata)
-            _LOGGER.info("Set fan speed to %d", speed)
-            
-        except Exception as err:
-            _LOGGER.error("Failed to set fan speed: %s", err)
-            raise
-    
+        await self._async_set_value(OP_TYPE_FAN_SPEED, speed, "fan_speed", speed)
+
     async def async_set_flap(self, position: int) -> None:
         """Set flap position (if device has flap support)."""
-        try:
-            if not self.data.get("has_flap"):
-                _LOGGER.warning("Device does not support flap control")
-                return
-            
-            metadata = [
-                ("mac_address", self.mac_address),
-                ("authorization", f"Bearer {self.token}"),
-            ]
-            
-            request = controls_pb2.SetDeviceValueRequest(
-                type=OP_TYPE_FLAP,
-                value=position
-            )
-            
-            # Optimistic update - immediately update local state
-            self.data["flap"] = position
-            self.async_set_updated_data(dict(self.data))
-            _LOGGER.debug("Optimistically updated flap position to %d", position)
-            
-            await self.stub.SetDeviceValue(request, metadata=metadata)
-            _LOGGER.info("Set flap position to %d", position)
-            
-        except Exception as err:
-            _LOGGER.error("Failed to set flap: %s", err)
-            raise
+        if not self.data.get("has_flap"):
+            _LOGGER.warning("Device does not support flap control")
+            return
+        await self._async_set_value(OP_TYPE_FLAP, position, "flap", position)
+
+    async def async_reboot(self) -> None:
+        """Reboot the device."""
+        await self._async_set_value(OP_TYPE_REBOOT, 1)
 
     async def async_shutdown(self):
         """Shutdown coordinator."""
         _LOGGER.info("Shutting down coordinator for MAC: %s", self.mac_address)
-        
+        await super().async_shutdown()
+
         if self._event_task and not self._event_task.done():
             self._event_task.cancel()
             try:
@@ -472,7 +418,7 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Event task cancelled successfully")
             except Exception as err:
                 _LOGGER.warning("Error while cancelling event task: %s", err)
-        
+
         if self.channel:
             try:
                 await self.channel.close()

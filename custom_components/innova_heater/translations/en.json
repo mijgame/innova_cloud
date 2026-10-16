@@ -19,15 +19,25 @@
         "data_description": {
           "device_type": "Select your device model (Fancoil/Osmo supports Auto/Heat/Cool only, no Dry mode)"
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Innova Cloud",
+        "description": "Your Innova Cloud session has expired. Enter your account credentials again.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
       }
     },
     "error": {
       "invalid_auth": "Invalid email or password",
       "no_devices": "No devices found on your account",
-      "unknown": "Unexpected error occurred"
+      "unknown": "Unexpected error occurred",
+      "cannot_connect": "Cannot connect to Innova Cloud"
     },
     "abort": {
-      "already_configured": "Device is already configured"
+      "already_configured": "Device is already configured",
+      "reauth_successful": "Re-authentication was successful"
     }
   }
 }

@@ -135,7 +135,7 @@ class InnovaHeaterWiFiSSIDSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.data.get("wifi_ssid") is not None
+        return super().available and self.coordinator.data.get("wifi_ssid") is not None
 
 
 class InnovaHeaterWiFiRSSISensor(CoordinatorEntity, SensorEntity):
@@ -168,7 +168,7 @@ class InnovaHeaterWiFiRSSISensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.data.get("wifi_rssi") is not None
+        return super().available and self.coordinator.data.get("wifi_rssi") is not None
 
 
 class InnovaHeaterOperationModeSensor(CoordinatorEntity, SensorEntity):
@@ -209,7 +209,7 @@ class InnovaHeaterOperationModeSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.data.get("operation_mode") is not None
+        return super().available and self.coordinator.data.get("operation_mode") is not None
 
 
 class InnovaHeaterConnectionTypeSensor(CoordinatorEntity, SensorEntity):
@@ -239,7 +239,7 @@ class InnovaHeaterConnectionTypeSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.data.get("connection_type") is not None
+        return super().available and self.coordinator.data.get("connection_type") is not None
 
 
 class InnovaHeaterFlapSensor(CoordinatorEntity, SensorEntity):
@@ -269,7 +269,7 @@ class InnovaHeaterFlapSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.data.get("flap") is not None
+        return super().available and self.coordinator.data.get("flap") is not None
 
 
 class InnovaHeaterFirmwareVersionSensor(CoordinatorEntity, SensorEntity):
@@ -306,7 +306,7 @@ class InnovaHeaterFirmwareVersionSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.data.get("fw_version") is not None
+        return super().available and self.coordinator.data.get("fw_version") is not None
 
 
 class InnovaHeaterSerialNumberSensor(CoordinatorEntity, SensorEntity):
@@ -337,4 +337,4 @@ class InnovaHeaterSerialNumberSensor(CoordinatorEntity, SensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.data.get("serial_number") is not None
+        return super().available and self.coordinator.data.get("serial_number") is not None

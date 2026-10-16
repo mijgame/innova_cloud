@@ -16,7 +16,7 @@ GRPC_HOST = "grpc.innova.solutiontech.tech"
 GRPC_PORT = 443
 
 # Update intervals
-UPDATE_INTERVAL = 30  # seconds
+UPDATE_INTERVAL = 60  # seconds; full status re-sync, real-time changes come via events
 
 # Event types (received from device)
 # Fancoil-specific event types
