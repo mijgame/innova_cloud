@@ -244,11 +244,11 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
         if s.HasField("hvac_mode"):
             self.data["hvac_mode"] = s.hvac_mode.value
             self.data["hvac_mode_actual"] = s.hvac_mode.actual_value
-            self.data["hvac_modes"] = list(s.hvac_mode.capabilities)
+            self.data["hvac_modes"] = sorted(s.hvac_mode.capabilities)
 
         if s.HasField("fan_speed"):
             self.data["fan_speed"] = s.fan_speed.value
-            self.data["fan_speeds"] = list(s.fan_speed.capabilities)
+            self.data["fan_speeds"] = sorted(s.fan_speed.capabilities)
 
         if s.HasField("flap_swing"):
             self.data["flap_swing"] = s.flap_swing
