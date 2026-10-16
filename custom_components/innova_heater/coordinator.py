@@ -1,12 +1,11 @@
-"""Data coordinator for Innova Cloud."""
+"""Data coordinator for Innova Cloud (v2 API)."""
 import asyncio
 import logging
-import struct
+import uuid
 from datetime import timedelta
 
 import aiohttp
 import grpc
-from google.protobuf import empty_pb2
 
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
@@ -14,38 +13,41 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.config_entries import ConfigEntry
 
-from .api import validate_login
+from .api import get_devices, validate_login
 from .const import (
     DOMAIN,
+    CONF_NODE_ID,
+    CONF_HOME_ID,
     GRPC_HOST,
     GRPC_PORT,
     UPDATE_INTERVAL,
-    EVENT_TYPE_CURRENT_TEMP,
-    EVENT_TYPE_TARGET_TEMP,
-    EVENT_TYPE_POWER_STATE,
-    EVENT_TYPE_OPERATION_MODE,
-    EVENT_TYPE_FAN_SPEED,
-    EVENT_TYPE_FANCOIL_FAN_SPEED,
-    EVENT_TYPE_FANCOIL_OPERATION_MODE,
-    EVENT_TYPE_FANCOIL_ROOM_TEMP,
-    EVENT_TYPE_FANCOIL_SETPOINT,
-    EVENT_TYPE_FANCOIL_POWER_STATE,
-    EVENT_TYPE_FANCOIL_FLAP,
-    OP_TYPE_POWER_STATE,
-    OP_TYPE_SETPOINT,
-    OP_TYPE_OPERATION_MODE,
-    OP_TYPE_FAN_SPEED,
-    OP_TYPE_FLAP,
-    OP_TYPE_REBOOT,
+    COMMAND_TIMEOUT,
+    HVAC_MODE_AUTO,
+    OPERATION_MODE_CALENDAR,
 )
-from . import controls_pb2, controls_pb2_grpc
+from . import app_service_pb2 as pb, app_service_pb2_grpc as pb_grpc
 
 _LOGGER = logging.getLogger(__name__)
+
+# Node types that share the climate state/command layout
+CLIMATE_NODE_TYPES = ("ac", "fancoil", "thermostat")
+
+
+class InnovaApiError(Exception):
+    """The Innova Cloud returned an error response."""
 
 
 def _is_auth_error(err: Exception) -> bool:
     """Return True if the gRPC error means our token is invalid/expired."""
     return isinstance(err, grpc.aio.AioRpcError) and err.code() == grpc.StatusCode.UNAUTHENTICATED
+
+
+def _enum_name(enum, value: int) -> str:
+    """Return the name of a protobuf enum value, tolerating unknown values."""
+    try:
+        return enum.Name(value)
+    except ValueError:
+        return str(value)
 
 
 class InnovaHeaterCoordinator(DataUpdateCoordinator):
@@ -56,7 +58,7 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
         _LOGGER.info("Initializing InnovaHeaterCoordinator for MAC: %s", entry.data.get("mac_address"))
 
         # Events push changes in real time; the periodic poll re-syncs the full
-        # status so missed events or ignored commands don't leave HA out of sync.
+        # state so missed events or ignored commands don't leave HA out of sync.
         super().__init__(
             hass,
             _LOGGER,
@@ -65,30 +67,33 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
         )
         self.entry = entry
         self.mac_address = entry.data["mac_address"]
+        # Entries created against the v1 API lack these; resolved on first update
+        self.node_id = entry.data.get(CONF_NODE_ID)
+        self.home_id = entry.data.get(CONF_HOME_ID)
         self.token = entry.data["token"]
+        self.node_type = None  # "ac" / "fancoil" / "thermostat", from get_state
         self.channel = None
         self.stub = None
         self._event_task = None
         self._token_lock = asyncio.Lock()
-        self._initial_data_received = False
 
-        # Initialize with default data
         self.data = {
+            "online": None,
             "current_temp": None,
             "target_temp": None,
             "min_temp": 5.0,
             "max_temp": 40.0,
             "target_temp_step": 0.5,
             "power_state": None,
-            "operation_mode": None,
+            "hvac_mode": None,         # what the device is set to (HVAC_MODE_*)
+            "hvac_mode_actual": None,  # what it is doing now, e.g. HEAT while set to AUTO
+            "hvac_modes": [],          # modes the device supports
             "fan_speed": None,
-            "flap": None,
-            "has_flap": False,
+            "fan_speeds": [],
+            "flap_swing": None,
+            "humidity": None,
+            "alarms": None,
             "calendar_active": None,
-            "keyboard_lock": None,
-            "mode_lock": None,
-            "hotel_mode": None,
-            "temperature_unit": None,
             "wifi_ssid": None,
             "wifi_rssi": None,
             "connection_type": None,
@@ -96,12 +101,14 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
             "serial_number": None,
         }
 
+    @property
+    def _mac_bytes(self) -> bytes:
+        """MAC address as the 6 raw bytes used on the wire."""
+        return bytes(int(part, 16) for part in self.mac_address.split(":"))
+
     def _metadata(self) -> list[tuple[str, str]]:
         """Build gRPC call metadata with the current token."""
-        return [
-            ("mac_address", self.mac_address),
-            ("authorization", f"Bearer {self.token}"),
-        ]
+        return [("authorization", f"Bearer {self.token}")]
 
     async def _async_renew_token(self, failed_token: str) -> None:
         """Log in again with the stored credentials to get a new token.
@@ -140,125 +147,157 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
         """Call a unary gRPC method, renewing the token once if it has expired."""
         token = self.token
         try:
-            return await method(request, metadata=self._metadata())
+            return await method(request, metadata=self._metadata(), timeout=COMMAND_TIMEOUT)
         except grpc.aio.AioRpcError as err:
             if not _is_auth_error(err):
                 raise
             await self._async_renew_token(token)
-            return await method(request, metadata=self._metadata())
+            return await method(request, metadata=self._metadata(), timeout=COMMAND_TIMEOUT)
+
+    async def _async_send(self, device_request: pb.DeviceRequest) -> pb.SendDeviceResponse:
+        """Send a request to our device node and return the response."""
+        request = pb.SendDeviceRequest(
+            mac_address=self._mac_bytes,
+            node_id=self.node_id,
+            request=device_request,
+        )
+        response = await self._async_call(self.stub.SendDevice, request)
+        if response.WhichOneof("type") == "error":
+            raise InnovaApiError(
+                f"{_enum_name(pb.ResponseErrorCode, response.error.code)}: {response.error.message}"
+            )
+        return response
 
     async def _async_setup_channel(self):
-        """Set up the gRPC channel and start the event listener."""
-        credentials = grpc.ssl_channel_credentials()
+        """Set up the gRPC channel."""
         self.channel = grpc.aio.secure_channel(
             f"{GRPC_HOST}:{GRPC_PORT}",
-            credentials
+            grpc.ssl_channel_credentials()
         )
-        self.stub = controls_pb2_grpc.ControlsStub(self.channel)
+        self.stub = pb_grpc.AppServiceStub(self.channel)
 
-    async def _fetch_status(self):
-        """Fetch the full device status and merge it into self.data."""
-        status = await self._async_call(self.stub.GetDeviceStatus, empty_pb2.Empty())
-
-        if not status.HasField('main_status'):
-            _LOGGER.warning("No main_status in response")
+    async def _async_resolve_device(self):
+        """Look up node_id/home_id for entries created before the v2 API."""
+        if self.node_id is not None and self.home_id:
             return
 
-        main = status.main_status
+        token = self.token
+        try:
+            try:
+                devices = await get_devices(self.hass, self.token)
+            except PermissionError:
+                await self._async_renew_token(token)
+                devices = await get_devices(self.hass, self.token)
+        except (aiohttp.ClientError, TimeoutError, PermissionError) as err:
+            raise UpdateFailed(f"Could not list Innova Cloud devices: {err}") from err
 
-        if main.serial_number:
-            self.data["serial_number"] = main.serial_number
+        device = next(
+            (d for d in devices if (d["mac"] or "").lower() == self.mac_address.lower()), None
+        )
+        if device is None:
+            raise UpdateFailed(f"Device {self.mac_address} not found on the Innova Cloud account")
 
-        device_type = main.WhichOneof('device_status')
-        device_status = getattr(main, device_type) if device_type else None
+        self.node_id = device["node_id"]
+        self.home_id = device["home_id"]
+        self.hass.config_entries.async_update_entry(
+            self.entry,
+            data={**self.entry.data, CONF_NODE_ID: self.node_id, CONF_HOME_ID: self.home_id},
+        )
+        _LOGGER.info("Resolved %s to node %s in home %s", self.mac_address, self.node_id, self.home_id)
 
-        if device_status:
-            _LOGGER.debug("Device type: %s", device_type)
-            # Protobuf hasattr() is always True for declared fields, so check
-            # the message descriptor to see which fields this device type has.
-            fields = device_status.DESCRIPTOR.fields_by_name
+    async def _fetch_status(self):
+        """Fetch the full device state and merge it into self.data."""
+        response = await self._async_send(
+            pb.DeviceRequest(shared=pb.SharedRequest(get_state=pb.SharedRequest.GetState()))
+        )
+        state = response.device.shared.state
 
-            if 'power_state' in fields:
-                self.data["power_state"] = device_status.power_state
+        if state.HasField("gateway"):
+            self._apply_gateway(state.gateway)
 
-            if 'room_temperature' in fields and device_status.room_temperature > 0:
-                self.data["current_temp"] = device_status.room_temperature / 10.0
-                self._initial_data_received = True
+        node = state.nodes.get(self.node_id)
+        if node is None:
+            raise InnovaApiError(f"Node {self.node_id} missing from device state (nodes: {list(state.nodes)})")
 
-            if 'temperature_setpoint' in fields and device_status.HasField('temperature_setpoint'):
-                setpoint = device_status.temperature_setpoint
-                self.data["target_temp"] = setpoint.value / 10.0
-                self.data["min_temp"] = setpoint.min / 10.0 if setpoint.min > 0 else 5.0
-                self.data["max_temp"] = setpoint.max / 10.0 if setpoint.max > 0 else 40.0
-                self.data["target_temp_step"] = setpoint.step / 10.0 if setpoint.step > 0 else 0.5
+        kind = node.WhichOneof("type")
+        if kind == "error":
+            _LOGGER.warning("Device reports node error: %s", _enum_name(pb.NodeErrorCode, node.error.code))
+            self.data["online"] = False
+            return
+        if kind not in CLIMATE_NODE_TYPES:
+            raise InnovaApiError(f"Unsupported node type: {kind}")
 
-            if 'operation_mode' in fields:
-                self.data["operation_mode"] = device_status.operation_mode
+        self.node_type = kind
+        s = getattr(node, kind)
+        self.data["online"] = True
+        self.data["power_state"] = s.power
+        self.data["current_temp"] = round(s.air_temperature, 1)
+        self.data["alarms"] = s.alarms
 
-            if 'fan_speed' in fields:
-                self.data["fan_speed"] = device_status.fan_speed
+        if s.HasField("temperature_setpoint"):
+            sp = s.temperature_setpoint
+            self.data["target_temp"] = round(sp.value, 1)
+            self.data["min_temp"] = sp.min or 5.0
+            self.data["max_temp"] = sp.max or 40.0
+            self.data["target_temp_step"] = sp.step or 0.5
 
-            if 'flap' in fields:
-                self.data["flap"] = device_status.flap
+        if s.HasField("hvac_mode"):
+            self.data["hvac_mode"] = s.hvac_mode.value
+            self.data["hvac_mode_actual"] = s.hvac_mode.actual_value
+            self.data["hvac_modes"] = list(s.hvac_mode.capabilities)
 
-            if 'has_flap' in fields:
-                self.data["has_flap"] = device_status.has_flap
+        if s.HasField("fan_speed"):
+            self.data["fan_speed"] = s.fan_speed.value
+            self.data["fan_speeds"] = list(s.fan_speed.capabilities)
 
-            if 'keyboard_lock' in fields:
-                self.data["keyboard_lock"] = device_status.keyboard_lock
+        if s.HasField("flap_swing"):
+            self.data["flap_swing"] = s.flap_swing
 
-            if 'mode_lock' in fields:
-                self.data["mode_lock"] = device_status.mode_lock
+        if s.HasField("air_humidity"):
+            self.data["humidity"] = round(s.air_humidity, 1)
 
-            if 'hotel_mode' in fields:
-                self.data["hotel_mode"] = device_status.hotel_mode
+        if s.HasField("operation_mode"):
+            self.data["calendar_active"] = s.operation_mode.active == OPERATION_MODE_CALENDAR
 
-            if 'temperature_unit' in fields:
-                self.data["temperature_unit"] = device_status.temperature_unit
+        _LOGGER.debug("State loaded: %s", self.data)
 
-            if 'calendar' in fields and device_status.HasField('calendar'):
-                self.data["calendar_active"] = device_status.calendar.is_active
-        else:
-            _LOGGER.debug("GetDeviceStatus returned no device status, waiting for events...")
-
-        # Parse IoT status (WiFi, firmware, etc.)
-        if status.HasField('iot_status'):
-            iot = status.iot_status
-
-            if iot.fw_version:
-                self.data["fw_version"] = iot.fw_version
-
-            if iot.HasField('wifi'):
+    def _apply_gateway(self, gateway):
+        """Merge gateway (IoT module) info into self.data."""
+        if gateway.firmware_version_code:
+            self.data["fw_version"] = gateway.firmware_version_code
+        if gateway.HasField("serial_number"):
+            self.data["serial_number"] = gateway.serial_number
+        if gateway.HasField("connection"):
+            connection = gateway.connection
+            if connection.HasField("wifi"):
                 self.data["connection_type"] = "WiFi"
-                self.data["wifi_ssid"] = iot.wifi.ssid
-                self.data["wifi_rssi"] = iot.wifi.rssi
-            elif iot.HasField('ethernet'):
+                if connection.wifi.HasField("network"):
+                    self.data["wifi_ssid"] = connection.wifi.network.ssid
+                    self.data["wifi_rssi"] = connection.wifi.network.rssi
+            elif connection.HasField("ethernet"):
                 self.data["connection_type"] = "Ethernet"
-            elif iot.HasField('thread'):
-                self.data["connection_type"] = "Thread"
-
-        _LOGGER.debug("Status loaded: %s", self.data)
 
     async def _listen_events(self):
-        """Listen to device events in background."""
-        _LOGGER.info("Starting event listener for MAC: %s", self.mac_address)
+        """Listen to the home's event stream in the background."""
+        _LOGGER.info("Starting event listener for home %s", self.home_id)
 
         retry_delay = 5  # Start with 5 seconds
         max_retry_delay = 60  # Max 60 seconds between retries
+        request = pb.SubscribeEventsRequest(home_id=uuid.UUID(self.home_id).bytes)
 
         while True:
             token = self.token
             try:
-                _LOGGER.debug("Subscribing to device events...")
-                empty = empty_pb2.Empty()
-                async for event in self.stub.SubscribeToDeviceEvents(empty, metadata=self._metadata()):
-                    await self._process_event(event)
+                _LOGGER.debug("Subscribing to home events...")
+                async for event in self.stub.SubscribeEvents(request, metadata=self._metadata()):
+                    self._process_event(event)
                     # Reset retry delay on successful event processing
                     retry_delay = 5
+                _LOGGER.debug("Event stream ended by server")
 
             except asyncio.CancelledError:
                 _LOGGER.info("Event listener cancelled")
-                break
+                raise
             except Exception as err:
                 if _is_auth_error(err):
                     try:
@@ -268,78 +307,94 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
                     except ConfigEntryAuthFailed as auth_err:
                         _LOGGER.error("Event stream stopped: %s", auth_err)
                         self.entry.async_start_reauth(self.hass)
-                        break
+                        return
                     except UpdateFailed as renew_err:
                         _LOGGER.warning("%s", renew_err)
                 else:
                     _LOGGER.error("Event stream error: %s", err, exc_info=True)
-                _LOGGER.info("Reconnecting to event stream in %d seconds...", retry_delay)
-                await asyncio.sleep(retry_delay)
 
-                # Exponential backoff with max limit
-                retry_delay = min(retry_delay * 2, max_retry_delay)
+            _LOGGER.info("Reconnecting to event stream in %d seconds...", retry_delay)
+            await asyncio.sleep(retry_delay)
+            # Exponential backoff with max limit
+            retry_delay = min(retry_delay * 2, max_retry_delay)
 
-    async def _process_event(self, event):
-        """Process incoming event and update data."""
-        _LOGGER.debug("Received event type=%s, value=%s", event.type, event.value.hex() if event.value else None)
+    def _process_event(self, event: pb.Event):
+        """Apply an event for our device node to self.data."""
+        if event.WhichOneof("type") != "device":
+            return
+        device = event.device
+        if device.mac_address != self._mac_bytes or device.node_id != self.node_id:
+            return
 
-        if event.value and len(event.value) >= 2:
-            value_int = struct.unpack('>H', event.value[:2])[0]
+        ev = device.event
+        kind = ev.WhichOneof("type")
+        _LOGGER.debug("Received event: %s", ev)
 
-            updated = False
-            # Temperature events (Fancoil uses 253/254, legacy uses same)
-            if event.type in (EVENT_TYPE_CURRENT_TEMP, EVENT_TYPE_FANCOIL_ROOM_TEMP):
-                self.data["current_temp"] = value_int / 10.0
-                _LOGGER.debug("Event: Current temp = %s°C", self.data["current_temp"])
-                updated = True
-                self._initial_data_received = True
-            elif event.type in (EVENT_TYPE_TARGET_TEMP, EVENT_TYPE_FANCOIL_SETPOINT):
-                self.data["target_temp"] = value_int / 10.0
-                _LOGGER.debug("Event: Target temp = %s°C", self.data["target_temp"])
-                updated = True
-            # Power state (Fancoil=255, legacy=1)
-            elif event.type in (EVENT_TYPE_POWER_STATE, EVENT_TYPE_FANCOIL_POWER_STATE):
-                self.data["power_state"] = bool(value_int)
-                _LOGGER.debug("Event: Power state = %s", self.data["power_state"])
-                updated = True
-            # Operation mode (Fancoil=252, legacy=3)
-            elif event.type in (EVENT_TYPE_OPERATION_MODE, EVENT_TYPE_FANCOIL_OPERATION_MODE):
-                old_mode = self.data["operation_mode"]
-                self.data["operation_mode"] = value_int
-                _LOGGER.debug("Event: Operation mode changed from %s to %s", old_mode, value_int)
-                updated = True
-            # Fan speed (Fancoil=251, legacy=4)
-            elif event.type in (EVENT_TYPE_FAN_SPEED, EVENT_TYPE_FANCOIL_FAN_SPEED):
-                self.data["fan_speed"] = value_int
-                _LOGGER.debug("Event: Fan speed = %s", self.data["fan_speed"])
-                updated = True
-            # Flap position (Fancoil=250)
-            elif event.type == EVENT_TYPE_FANCOIL_FLAP:
-                self.data["flap"] = value_int
-                _LOGGER.debug("Event: Flap position = %s", self.data["flap"])
-                updated = True
+        if kind == "system":
+            system = ev.system.WhichOneof("type")
+            if system == "connection_lost":
+                self.data["online"] = False
+            elif system == "connection_established":
+                self.data["online"] = True
+                # The device may have changed while offline; re-sync the full state
+                self.hass.async_create_task(self.async_request_refresh())
             else:
-                _LOGGER.debug("Unknown event type: %s, value: %s", event.type, value_int)
+                return
+        elif kind == "device":
+            node_kind = ev.device.WhichOneof("type")
+            if node_kind not in CLIMATE_NODE_TYPES:
+                return
+            e = getattr(ev.device, node_kind)
 
-            if updated:
-                # Infer power state if we have temp data but no explicit power event
-                if self.data["power_state"] is None and self.data["current_temp"] is not None:
-                    _LOGGER.debug("Inferring power state = ON from temp data")
-                    self.data["power_state"] = True
+            if e.HasField("power"):
+                self.data["power_state"] = e.power
+            if e.HasField("air_temperature"):
+                self.data["current_temp"] = round(e.air_temperature, 1)
+            if e.HasField("temperature_setpoint"):
+                sp = e.temperature_setpoint
+                if sp.HasField("value"):
+                    self.data["target_temp"] = round(sp.value, 1)
+                if sp.HasField("min") and sp.min:
+                    self.data["min_temp"] = sp.min
+                if sp.HasField("max") and sp.max:
+                    self.data["max_temp"] = sp.max
+                if sp.HasField("step") and sp.step:
+                    self.data["target_temp_step"] = sp.step
+            if e.HasField("hvac_mode"):
+                self.data["hvac_mode"] = e.hvac_mode
+                # Events don't carry the actual mode; outside AUTO it equals the set mode,
+                # in AUTO the next full state poll fills it in
+                self.data["hvac_mode_actual"] = e.hvac_mode if e.hvac_mode != HVAC_MODE_AUTO else None
+            if e.HasField("fan_speed"):
+                self.data["fan_speed"] = e.fan_speed
+            if e.HasField("flap_swing"):
+                self.data["flap_swing"] = e.flap_swing
+            if e.HasField("air_humidity"):
+                self.data["humidity"] = round(e.air_humidity, 1)
+            if e.HasField("operation_mode"):
+                self.data["calendar_active"] = e.operation_mode.active == OPERATION_MODE_CALENDAR
+            if e.HasField("alarms"):
+                self.data["alarms"] = e.alarms
+            self.data["online"] = True
+        else:
+            return
 
-                _LOGGER.debug("Updated data: %s", self.data)
-                # Create a new dict copy to ensure Home Assistant detects the change
-                self.async_set_updated_data(dict(self.data))
+        # Create a new dict copy to ensure Home Assistant detects the change
+        self.async_set_updated_data(dict(self.data))
 
     async def _async_update_data(self):
-        """Fetch the full device status; real-time changes arrive via the event stream."""
+        """Fetch the full device state; real-time changes arrive via the event stream."""
         if self.channel is None:
             await self._async_setup_channel()
+
+        await self._async_resolve_device()
 
         try:
             await self._fetch_status()
         except grpc.aio.AioRpcError as err:
-            raise UpdateFailed(f"Failed to fetch device status: {err.code().name} {err.details()}") from err
+            raise UpdateFailed(f"Failed to fetch device state: {err.code().name} {err.details()}") from err
+        except InnovaApiError as err:
+            raise UpdateFailed(f"Failed to fetch device state: {err}") from err
 
         if self._event_task is None or self._event_task.done():
             self._event_task = self.entry.async_create_background_task(
@@ -348,62 +403,64 @@ class InnovaHeaterCoordinator(DataUpdateCoordinator):
 
         return dict(self.data)
 
-    async def _async_set_value(self, op_type: int, value: int, key: str | None = None, new_state=None) -> None:
-        """Send a SetDeviceValue command, optimistically updating `key` to `new_state`.
+    async def _async_set_state(self, optimistic: dict, **fields) -> None:
+        """Send a set_state command, optimistically applying `optimistic` to self.data.
 
         If the command fails the optimistic update is rolled back, so HA does not
         show a state the device never received.
         """
-        request = controls_pb2.SetDeviceValueRequest(type=op_type, value=value)
+        node_type = self.node_type or "fancoil"
+        request = pb.DeviceRequest(
+            **{node_type: pb.ClimateRequest(set_state=pb.ClimateRequest.SetState(**fields))}
+        )
 
-        if key is not None:
-            old_state = self.data.get(key)
-            self.data[key] = new_state
-            self.async_set_updated_data(dict(self.data))
+        old_state = {key: self.data.get(key) for key in optimistic}
+        self.data.update(optimistic)
+        self.async_set_updated_data(dict(self.data))
 
         try:
-            await self._async_call(self.stub.SetDeviceValue, request)
+            await self._async_send(request)
         except Exception as err:
-            if key is not None:
-                self.data[key] = old_state
-                self.async_set_updated_data(dict(self.data))
+            self.data.update(old_state)
+            self.async_set_updated_data(dict(self.data))
             if isinstance(err, ConfigEntryAuthFailed):
                 self.entry.async_start_reauth(self.hass)
-            raise HomeAssistantError(f"Innova Cloud command failed (type={op_type}, value={value}): {err}") from err
+            raise HomeAssistantError(f"Innova Cloud command {fields} failed: {err}") from err
 
-        _LOGGER.debug("Sent command type=%d value=%d", op_type, value)
+        _LOGGER.debug("Sent set_state %s", fields)
 
     async def async_set_temperature(self, temperature: float) -> None:
         """Set target temperature."""
-        await self._async_set_value(OP_TYPE_SETPOINT, round(temperature * 10), "target_temp", temperature)
+        await self._async_set_state({"target_temp": temperature}, temperature_setpoint=temperature)
 
     async def async_set_power(self, power_on: bool) -> None:
         """Set power state."""
-        await self._async_set_value(OP_TYPE_POWER_STATE, 1 if power_on else 0, "power_state", power_on)
+        await self._async_set_state({"power_state": power_on}, power=power_on)
 
-    async def async_set_operation_mode(self, mode: int) -> None:
-        """Set operation mode (0=Auto, 1=Heat, 2=Cool, 3=Fan, 4=Dry)."""
-        if self.data.get("mode_lock"):
-            _LOGGER.warning(
-                "Device reports mode_lock=%s; the operation mode change may be ignored by the device",
-                self.data["mode_lock"],
-            )
-        await self._async_set_value(OP_TYPE_OPERATION_MODE, mode, "operation_mode", mode)
+    async def async_set_hvac_mode(self, mode: int) -> None:
+        """Turn on and set the HVAC mode (HVAC_MODE_*) in a single command."""
+        await self._async_set_state(
+            {"power_state": True, "hvac_mode": mode, "hvac_mode_actual": None if mode == HVAC_MODE_AUTO else mode},
+            power=True,
+            hvac_mode=mode,
+        )
 
     async def async_set_fan_speed(self, speed: int) -> None:
-        """Set fan speed (device-dependent values)."""
-        await self._async_set_value(OP_TYPE_FAN_SPEED, speed, "fan_speed", speed)
+        """Set fan speed (FAN_SPEED_*)."""
+        await self._async_set_state({"fan_speed": speed}, fan_speed=speed)
 
-    async def async_set_flap(self, position: int) -> None:
-        """Set flap position (if device has flap support)."""
-        if not self.data.get("has_flap"):
-            _LOGGER.warning("Device does not support flap control")
-            return
-        await self._async_set_value(OP_TYPE_FLAP, position, "flap", position)
+    async def async_set_flap_swing(self, swing: bool) -> None:
+        """Turn the air flap swing on or off."""
+        await self._async_set_state({"flap_swing": swing}, flap_swing=swing)
 
     async def async_reboot(self) -> None:
         """Reboot the device."""
-        await self._async_set_value(OP_TYPE_REBOOT, 1)
+        try:
+            await self._async_send(
+                pb.DeviceRequest(system=pb.SystemRequest(reboot=pb.SystemRequest.Reboot()))
+            )
+        except Exception as err:
+            raise HomeAssistantError(f"Innova Cloud reboot failed: {err}") from err
 
     async def async_shutdown(self):
         """Shutdown coordinator."""

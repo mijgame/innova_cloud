@@ -166,7 +166,7 @@ message GatewayState {
       message Network {
         optional string ssid = 1;
         optional int32 rssi = 2;
-        optional int32 snr = 3;
+        optional uint32 snr = 3;
         optional int32 band = 4;
       }
       optional Network network = 1;
@@ -186,7 +186,7 @@ message NodeError {
 
 message NodeState {
   oneof type {
-    ClimateState ac = 1;
+    AcState ac = 1;
     ClimateState fancoil = 2;
     ClimateState thermostat = 3;
     // 4 = heatpump, 5 = butler (not implemented)
@@ -221,9 +221,7 @@ message OperationMode {
   // 3 = manual, 4 = antifreeze configuration (not implemented)
 }
 
-// Full state, as returned by shared.get_state. AC adds erv=9 (bool),
-// operation_mode=10 and silent_mode=11; fancoil/thermostat have operation_mode=9.
-// erv is left out so the fancoil/thermostat operation_mode can use field 9.
+// Full state of a fancoil or thermostat node, as returned by shared.get_state
 message ClimateState {
   uint32 alarms = 1;
   bool power = 2;
@@ -234,6 +232,22 @@ message ClimateState {
   float air_temperature = 7;
   optional float air_humidity = 8;
   optional OperationMode operation_mode = 9;
+}
+
+// Full state of an air conditioner node: like ClimateState plus erv/silent_mode,
+// with operation_mode moved to 10
+message AcState {
+  uint32 alarms = 1;
+  bool power = 2;
+  optional Setpoint temperature_setpoint = 3;
+  optional HvacModeState hvac_mode = 4;
+  optional FanSpeedState fan_speed = 5;
+  optional bool flap_swing = 6;
+  float air_temperature = 7;
+  optional float air_humidity = 8;
+  optional bool erv = 9;
+  optional OperationMode operation_mode = 10;
+  optional bool silent_mode = 11;
 }
 
 // ---------------------------------------------------------------- events
@@ -266,7 +280,7 @@ message DeviceEvent {
   message State {
     oneof type {
       // 1 = gateway
-      ClimateEvent ac = 2;
+      AcEvent ac = 2;
       ClimateEvent fancoil = 3;
       // 4 = butler
       ClimateEvent thermostat = 5;
@@ -280,9 +294,6 @@ message DeviceEvent {
   }
 }
 
-// Partial update: only fields that changed are present. AC uses the same
-// numbers for 1-7 but erv=8, operation_mode=9, air_humidity=10, silent_mode=11;
-// those (rarely changing) fields are left out here to keep one message.
 message ClimateEventSetpoint {
   optional float value = 1;
   optional float min = 2;
@@ -290,6 +301,7 @@ message ClimateEventSetpoint {
   optional float step = 4;
 }
 
+// Partial update for a fancoil/thermostat node: only changed fields are present
 message ClimateEvent {
   optional uint32 alarms = 1;
   optional bool power = 2;
@@ -298,4 +310,21 @@ message ClimateEvent {
   optional HvacMode hvac_mode = 5;
   optional FanSpeed fan_speed = 6;
   optional bool flap_swing = 7;
+  optional OperationMode operation_mode = 8;
+  optional float air_humidity = 9;
+}
+
+// Partial update for an air conditioner node
+message AcEvent {
+  optional uint32 alarms = 1;
+  optional bool power = 2;
+  optional ClimateEventSetpoint temperature_setpoint = 3;
+  optional float air_temperature = 4;
+  optional HvacMode hvac_mode = 5;
+  optional FanSpeed fan_speed = 6;
+  optional bool flap_swing = 7;
+  optional bool erv = 8;
+  optional OperationMode operation_mode = 9;
+  optional float air_humidity = 10;
+  optional bool silent_mode = 11;
 }

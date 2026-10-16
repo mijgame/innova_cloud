@@ -256,11 +256,11 @@ class NodeState(_message.Message):
     FANCOIL_FIELD_NUMBER: _ClassVar[int]
     THERMOSTAT_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
-    ac: ClimateState
+    ac: AcState
     fancoil: ClimateState
     thermostat: ClimateState
     error: NodeError
-    def __init__(self, ac: _Optional[_Union[ClimateState, _Mapping]] = ..., fancoil: _Optional[_Union[ClimateState, _Mapping]] = ..., thermostat: _Optional[_Union[ClimateState, _Mapping]] = ..., error: _Optional[_Union[NodeError, _Mapping]] = ...) -> None: ...
+    def __init__(self, ac: _Optional[_Union[AcState, _Mapping]] = ..., fancoil: _Optional[_Union[ClimateState, _Mapping]] = ..., thermostat: _Optional[_Union[ClimateState, _Mapping]] = ..., error: _Optional[_Union[NodeError, _Mapping]] = ...) -> None: ...
 
 class Setpoint(_message.Message):
     __slots__ = ("value", "min", "max", "step")
@@ -327,6 +327,32 @@ class ClimateState(_message.Message):
     operation_mode: OperationMode
     def __init__(self, alarms: _Optional[int] = ..., power: bool = ..., temperature_setpoint: _Optional[_Union[Setpoint, _Mapping]] = ..., hvac_mode: _Optional[_Union[HvacModeState, _Mapping]] = ..., fan_speed: _Optional[_Union[FanSpeedState, _Mapping]] = ..., flap_swing: bool = ..., air_temperature: _Optional[float] = ..., air_humidity: _Optional[float] = ..., operation_mode: _Optional[_Union[OperationMode, _Mapping]] = ...) -> None: ...
 
+class AcState(_message.Message):
+    __slots__ = ("alarms", "power", "temperature_setpoint", "hvac_mode", "fan_speed", "flap_swing", "air_temperature", "air_humidity", "erv", "operation_mode", "silent_mode")
+    ALARMS_FIELD_NUMBER: _ClassVar[int]
+    POWER_FIELD_NUMBER: _ClassVar[int]
+    TEMPERATURE_SETPOINT_FIELD_NUMBER: _ClassVar[int]
+    HVAC_MODE_FIELD_NUMBER: _ClassVar[int]
+    FAN_SPEED_FIELD_NUMBER: _ClassVar[int]
+    FLAP_SWING_FIELD_NUMBER: _ClassVar[int]
+    AIR_TEMPERATURE_FIELD_NUMBER: _ClassVar[int]
+    AIR_HUMIDITY_FIELD_NUMBER: _ClassVar[int]
+    ERV_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_MODE_FIELD_NUMBER: _ClassVar[int]
+    SILENT_MODE_FIELD_NUMBER: _ClassVar[int]
+    alarms: int
+    power: bool
+    temperature_setpoint: Setpoint
+    hvac_mode: HvacModeState
+    fan_speed: FanSpeedState
+    flap_swing: bool
+    air_temperature: float
+    air_humidity: float
+    erv: bool
+    operation_mode: OperationMode
+    silent_mode: bool
+    def __init__(self, alarms: _Optional[int] = ..., power: bool = ..., temperature_setpoint: _Optional[_Union[Setpoint, _Mapping]] = ..., hvac_mode: _Optional[_Union[HvacModeState, _Mapping]] = ..., fan_speed: _Optional[_Union[FanSpeedState, _Mapping]] = ..., flap_swing: bool = ..., air_temperature: _Optional[float] = ..., air_humidity: _Optional[float] = ..., erv: bool = ..., operation_mode: _Optional[_Union[OperationMode, _Mapping]] = ..., silent_mode: bool = ...) -> None: ...
+
 class SubscribeEventsRequest(_message.Message):
     __slots__ = ("home_id",)
     HOME_ID_FIELD_NUMBER: _ClassVar[int]
@@ -368,10 +394,10 @@ class DeviceEvent(_message.Message):
         AC_FIELD_NUMBER: _ClassVar[int]
         FANCOIL_FIELD_NUMBER: _ClassVar[int]
         THERMOSTAT_FIELD_NUMBER: _ClassVar[int]
-        ac: ClimateEvent
+        ac: AcEvent
         fancoil: ClimateEvent
         thermostat: ClimateEvent
-        def __init__(self, ac: _Optional[_Union[ClimateEvent, _Mapping]] = ..., fancoil: _Optional[_Union[ClimateEvent, _Mapping]] = ..., thermostat: _Optional[_Union[ClimateEvent, _Mapping]] = ...) -> None: ...
+        def __init__(self, ac: _Optional[_Union[AcEvent, _Mapping]] = ..., fancoil: _Optional[_Union[ClimateEvent, _Mapping]] = ..., thermostat: _Optional[_Union[ClimateEvent, _Mapping]] = ...) -> None: ...
     SYSTEM_FIELD_NUMBER: _ClassVar[int]
     DEVICE_FIELD_NUMBER: _ClassVar[int]
     system: DeviceEvent.System
@@ -391,7 +417,7 @@ class ClimateEventSetpoint(_message.Message):
     def __init__(self, value: _Optional[float] = ..., min: _Optional[float] = ..., max: _Optional[float] = ..., step: _Optional[float] = ...) -> None: ...
 
 class ClimateEvent(_message.Message):
-    __slots__ = ("alarms", "power", "temperature_setpoint", "air_temperature", "hvac_mode", "fan_speed", "flap_swing")
+    __slots__ = ("alarms", "power", "temperature_setpoint", "air_temperature", "hvac_mode", "fan_speed", "flap_swing", "operation_mode", "air_humidity")
     ALARMS_FIELD_NUMBER: _ClassVar[int]
     POWER_FIELD_NUMBER: _ClassVar[int]
     TEMPERATURE_SETPOINT_FIELD_NUMBER: _ClassVar[int]
@@ -399,6 +425,8 @@ class ClimateEvent(_message.Message):
     HVAC_MODE_FIELD_NUMBER: _ClassVar[int]
     FAN_SPEED_FIELD_NUMBER: _ClassVar[int]
     FLAP_SWING_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_MODE_FIELD_NUMBER: _ClassVar[int]
+    AIR_HUMIDITY_FIELD_NUMBER: _ClassVar[int]
     alarms: int
     power: bool
     temperature_setpoint: ClimateEventSetpoint
@@ -406,4 +434,32 @@ class ClimateEvent(_message.Message):
     hvac_mode: HvacMode
     fan_speed: FanSpeed
     flap_swing: bool
-    def __init__(self, alarms: _Optional[int] = ..., power: bool = ..., temperature_setpoint: _Optional[_Union[ClimateEventSetpoint, _Mapping]] = ..., air_temperature: _Optional[float] = ..., hvac_mode: _Optional[_Union[HvacMode, str]] = ..., fan_speed: _Optional[_Union[FanSpeed, str]] = ..., flap_swing: bool = ...) -> None: ...
+    operation_mode: OperationMode
+    air_humidity: float
+    def __init__(self, alarms: _Optional[int] = ..., power: bool = ..., temperature_setpoint: _Optional[_Union[ClimateEventSetpoint, _Mapping]] = ..., air_temperature: _Optional[float] = ..., hvac_mode: _Optional[_Union[HvacMode, str]] = ..., fan_speed: _Optional[_Union[FanSpeed, str]] = ..., flap_swing: bool = ..., operation_mode: _Optional[_Union[OperationMode, _Mapping]] = ..., air_humidity: _Optional[float] = ...) -> None: ...
+
+class AcEvent(_message.Message):
+    __slots__ = ("alarms", "power", "temperature_setpoint", "air_temperature", "hvac_mode", "fan_speed", "flap_swing", "erv", "operation_mode", "air_humidity", "silent_mode")
+    ALARMS_FIELD_NUMBER: _ClassVar[int]
+    POWER_FIELD_NUMBER: _ClassVar[int]
+    TEMPERATURE_SETPOINT_FIELD_NUMBER: _ClassVar[int]
+    AIR_TEMPERATURE_FIELD_NUMBER: _ClassVar[int]
+    HVAC_MODE_FIELD_NUMBER: _ClassVar[int]
+    FAN_SPEED_FIELD_NUMBER: _ClassVar[int]
+    FLAP_SWING_FIELD_NUMBER: _ClassVar[int]
+    ERV_FIELD_NUMBER: _ClassVar[int]
+    OPERATION_MODE_FIELD_NUMBER: _ClassVar[int]
+    AIR_HUMIDITY_FIELD_NUMBER: _ClassVar[int]
+    SILENT_MODE_FIELD_NUMBER: _ClassVar[int]
+    alarms: int
+    power: bool
+    temperature_setpoint: ClimateEventSetpoint
+    air_temperature: float
+    hvac_mode: HvacMode
+    fan_speed: FanSpeed
+    flap_swing: bool
+    erv: bool
+    operation_mode: OperationMode
+    air_humidity: float
+    silent_mode: bool
+    def __init__(self, alarms: _Optional[int] = ..., power: bool = ..., temperature_setpoint: _Optional[_Union[ClimateEventSetpoint, _Mapping]] = ..., air_temperature: _Optional[float] = ..., hvac_mode: _Optional[_Union[HvacMode, str]] = ..., fan_speed: _Optional[_Union[FanSpeed, str]] = ..., flap_swing: bool = ..., erv: bool = ..., operation_mode: _Optional[_Union[OperationMode, _Mapping]] = ..., air_humidity: _Optional[float] = ..., silent_mode: bool = ...) -> None: ...
