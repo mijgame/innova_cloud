@@ -26,8 +26,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-import grpc
-from google.protobuf import empty_pb2, text_format
+try:
+    import grpc
+    from google.protobuf import empty_pb2, text_format
+except ImportError:
+    sys.exit("Missing dependencies; run with a Python that has them: pip install grpcio protobuf")
 
 API_BASE_URL = "https://api.innova.solutiontech.tech/api"
 GRPC_TARGET = "grpc.innova.solutiontech.tech:443"
