@@ -10,16 +10,20 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.data_entry_flow import FlowResult
 
-from .api import get_devices, validate_login
+from .api import get_devices, normalize_email, validate_login
 from .const import (
     DOMAIN,
     CONF_MAC_ADDRESS,
-    CONF_DEVICE_TYPE,
-    DEVICE_TYPES,
-    DEVICE_TYPE_FANCOIL,
+    CONF_NODE_ID,
+    CONF_HOME_ID,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def device_key(device: dict) -> str:
+    """Unique key for a device node; node 0 keeps the bare MAC (as v1 entries used)."""
+    return device["mac"] if not device["node_id"] else f"{device['mac']}_{device['node_id']}"
 
 
 class InnovaHeaterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -48,7 +52,7 @@ class InnovaHeaterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 if result and result.get("token"):
                     self.token = result["token"]
-                    self.email = user_input[CONF_EMAIL]
+                    self.email = normalize_email(user_input[CONF_EMAIL])
                     self.password = user_input[CONF_PASSWORD]
                     self.devices = await get_devices(self.hass, self.token)
 
@@ -78,19 +82,20 @@ class InnovaHeaterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_device(self, user_input=None) -> FlowResult:
         """Handle device selection."""
         if user_input is not None:
-            mac_address = user_input[CONF_MAC_ADDRESS]
-            device_type = user_input.get(CONF_DEVICE_TYPE, DEVICE_TYPE_FANCOIL)
-            device = next((d for d in self.devices if d["mac"] == mac_address), None)
+            key = user_input["device"]
+            device = next((d for d in self.devices if device_key(d) == key), None)
 
             if device:
-                await self.async_set_unique_id(mac_address)
+                await self.async_set_unique_id(key)
                 self._abort_if_unique_id_configured()
 
+                title = f"{device['name']} ({device['room']})" if device["room"] else device["name"]
                 return self.async_create_entry(
-                    title=f"{device['name']} ({device['room']})",
+                    title=title,
                     data={
-                        CONF_MAC_ADDRESS: mac_address,
-                        CONF_DEVICE_TYPE: device_type,
+                        CONF_MAC_ADDRESS: device["mac"],
+                        CONF_NODE_ID: device["node_id"],
+                        CONF_HOME_ID: device["home_id"],
                         CONF_EMAIL: self.email,
                         CONF_PASSWORD: self.password,
                         "token": self.token,
@@ -98,14 +103,15 @@ class InnovaHeaterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     },
                 )
 
-        device_options = {d["mac"]: f"{d['name']} - {d['room']} ({d['home']})"
-                         for d in self.devices}
+        device_options = {
+            device_key(d): " - ".join(p for p in (d["name"], d["room"]) if p) + f" ({d['home']})"
+            for d in self.devices
+        }
 
         return self.async_show_form(
             step_id="device",
             data_schema=vol.Schema({
-                vol.Required(CONF_MAC_ADDRESS): vol.In(device_options),
-                vol.Required(CONF_DEVICE_TYPE, default=DEVICE_TYPE_FANCOIL): vol.In(DEVICE_TYPES),
+                vol.Required("device"): vol.In(device_options),
             }),
         )
 
@@ -130,7 +136,7 @@ class InnovaHeaterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_update_reload_and_abort(
                         reauth_entry,
                         data_updates={
-                            CONF_EMAIL: user_input[CONF_EMAIL],
+                            CONF_EMAIL: normalize_email(user_input[CONF_EMAIL]),
                             CONF_PASSWORD: user_input[CONF_PASSWORD],
                             "token": result["token"],
                         },

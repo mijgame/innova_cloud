@@ -11,13 +11,9 @@
       },
       "device": {
         "title": "Select Device",
-        "description": "Choose your device and specify its model type",
+        "description": "Choose the device to add",
         "data": {
-          "mac_address": "Device",
-          "device_type": "Device Model"
-        },
-        "data_description": {
-          "device_type": "Select your device model (Fancoil/Osmo supports Auto/Heat/Cool only, no Dry mode)"
+          "device": "Device"
         }
       },
       "reauth_confirm": {

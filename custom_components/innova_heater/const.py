@@ -8,102 +8,50 @@ DOMAIN = "innova_heater"
 CONF_EMAIL = "email"
 CONF_PASSWORD = "password"
 CONF_MAC_ADDRESS = "mac_address"
-CONF_DEVICE_TYPE = "device_type"
+CONF_NODE_ID = "node_id"
+CONF_HOME_ID = "home_id"
+CONF_DEVICE_TYPE = "device_type"  # v1 entries only; v2 reads capabilities from the device
 
-# API
-API_BASE_URL = "https://api.innova.solutiontech.tech/api"
-GRPC_HOST = "grpc.innova.solutiontech.tech"
+# API (v2, as used by the Innova app 3.x)
+API_BASE_URL = "https://v2.api.innova.solutiontech.tech/app"
+GRPC_HOST = "v2.grpc.innova.solutiontech.tech"
 GRPC_PORT = 443
 
 # Update intervals
 UPDATE_INTERVAL = 60  # seconds; full status re-sync, real-time changes come via events
+COMMAND_TIMEOUT = 10  # seconds; the app uses 5
 
-# Event types (received from device)
-# Fancoil-specific event types
-EVENT_TYPE_FANCOIL_MANUAL_MODE = 249
-EVENT_TYPE_FANCOIL_FLAP = 250
-EVENT_TYPE_FANCOIL_FAN_SPEED = 251
-EVENT_TYPE_FANCOIL_OPERATION_MODE = 252
-EVENT_TYPE_FANCOIL_ROOM_TEMP = 253
-EVENT_TYPE_FANCOIL_SETPOINT = 254
-EVENT_TYPE_FANCOIL_POWER_STATE = 255
+# HvacMode enum values on the wire (see app_service.proto)
+HVAC_MODE_AUTO = 1
+HVAC_MODE_HEAT = 2
+HVAC_MODE_COOL = 3
+HVAC_MODE_DRY = 4
+HVAC_MODE_FAN = 5
 
-# Legacy event types (may still be used by some devices)
-EVENT_TYPE_POWER_STATE = 1
-EVENT_TYPE_OPERATION_MODE = 3
-EVENT_TYPE_FAN_SPEED = 4
-EVENT_TYPE_CURRENT_TEMP = 253
-EVENT_TYPE_TARGET_TEMP = 254
-
-# Operation types (SetDeviceValue - sent to device)
-OP_TYPE_POWER_STATE = 1
-OP_TYPE_SETPOINT = 2
-OP_TYPE_OPERATION_MODE = 3
-OP_TYPE_FAN_SPEED = 4
-OP_TYPE_FLAP = 5
-# Type 6 appears unused
-OP_TYPE_REBOOT = 7
-OP_TYPE_CALENDAR = 8
-OP_TYPE_MANUAL_MODE = 9
-
-# Device types (from APK DeviceType enum)
-DEVICE_TYPE_DUEPUNTOZERO = "duepuntozero"
-DEVICE_TYPE_M7 = "m7"
-DEVICE_TYPE_FANCOIL = "fancoil"
-DEVICE_TYPE_M6 = "m6"
-DEVICE_TYPE_FANCOIL_LEGACY = "fancoil_legacy"
-DEVICE_TYPE_WATERLOOP = "waterloop"
-
-DEVICE_TYPES = {
-    DEVICE_TYPE_FANCOIL: "Fancoil / Osmo",
-    DEVICE_TYPE_DUEPUNTOZERO: "Duepuntozero",
-    DEVICE_TYPE_M7: "M7",
-    DEVICE_TYPE_M6: "M6",
-    DEVICE_TYPE_FANCOIL_LEGACY: "Fancoil Legacy",
-    DEVICE_TYPE_WATERLOOP: "Waterloop",
+HVAC_MODE_NAMES = {
+    HVAC_MODE_AUTO: "Auto",
+    HVAC_MODE_HEAT: "Heat",
+    HVAC_MODE_COOL: "Cool",
+    HVAC_MODE_DRY: "Dry",
+    HVAC_MODE_FAN: "Fan Only",
 }
 
-# Supported modes per device type (from APK operation mode enums)
-DEVICE_TYPE_MODES = {
-    DEVICE_TYPE_FANCOIL: [
-        HVACMode.OFF,
-        HVACMode.AUTO,
-        HVACMode.HEAT,
-        HVACMode.COOL,
-    ],
-    DEVICE_TYPE_DUEPUNTOZERO: [
-        HVACMode.OFF,
-        HVACMode.AUTO,
-        HVACMode.HEAT,
-        HVACMode.COOL,
-        HVACMode.FAN_ONLY,
-        HVACMode.DRY,
-    ],
-    DEVICE_TYPE_M7: [
-        HVACMode.OFF,
-        HVACMode.AUTO,
-        HVACMode.HEAT,
-        HVACMode.COOL,
-        HVACMode.FAN_ONLY,
-        HVACMode.DRY,
-    ],
-    DEVICE_TYPE_M6: [
-        HVACMode.OFF,
-        HVACMode.AUTO,
-        HVACMode.HEAT,
-        HVACMode.COOL,
-    ],
-    DEVICE_TYPE_FANCOIL_LEGACY: [
-        HVACMode.OFF,
-        HVACMode.HEAT,
-        HVACMode.COOL,
-    ],
-    DEVICE_TYPE_WATERLOOP: [
-        HVACMode.OFF,
-        HVACMode.AUTO,
-        HVACMode.HEAT,
-        HVACMode.COOL,
-        HVACMode.FAN_ONLY,
-        HVACMode.DRY,
-    ],
-}
+# FanSpeed enum values on the wire
+FAN_SPEED_AUTO = 1
+FAN_SPEED_MIN = 2
+FAN_SPEED_MID = 3
+FAN_SPEED_MAX = 4
+FAN_SPEED_BOOST = 5
+
+# OperationModeType enum values on the wire
+OPERATION_MODE_CALENDAR = 1
+OPERATION_MODE_MANUAL = 2
+OPERATION_MODE_ANTIFREEZE = 3
+
+# Modes to offer when the device doesn't report its capabilities
+DEFAULT_HVAC_MODES = [
+    HVACMode.OFF,
+    HVACMode.AUTO,
+    HVACMode.HEAT,
+    HVACMode.COOL,
+]

@@ -1,0 +1,330 @@
+// Innova Cloud v2 gRPC API (v2.grpc.innova.solutiontech.tech:443).
+//
+// Reconstructed from the Innova Android app 3.1.3 (protobuf-lite classes).
+// Only the service/package names and field numbers/types matter on the wire;
+// message names are our own. Heat pump and Butler payloads are left out.
+//
+// Auth: "authorization: Bearer <token>" metadata (token from POST /app/users/login).
+syntax = "proto3";
+package services.app;
+
+service AppService {
+  rpc SendDevice(SendDeviceRequest) returns (SendDeviceResponse);
+  // Server stream of events for all devices in a home
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream Event);
+}
+
+// ---------------------------------------------------------------- enums
+
+enum HvacMode {
+  HVAC_MODE_UNSPECIFIED = 0;
+  HVAC_MODE_AUTO = 1;
+  HVAC_MODE_HEAT = 2;
+  HVAC_MODE_COOL = 3;
+  HVAC_MODE_DRY = 4;
+  HVAC_MODE_FAN = 5;
+}
+
+enum FanSpeed {
+  FAN_SPEED_UNSPECIFIED = 0;
+  FAN_SPEED_AUTO = 1;
+  FAN_SPEED_MIN = 2;
+  FAN_SPEED_MID = 3;
+  FAN_SPEED_MAX = 4;
+  FAN_SPEED_BOOST = 5;
+}
+
+enum OperationModeType {
+  OPERATION_MODE_UNSPECIFIED = 0;
+  OPERATION_MODE_CALENDAR = 1;
+  OPERATION_MODE_MANUAL = 2;
+  OPERATION_MODE_ANTIFREEZE = 3;
+}
+
+enum Preset {
+  PRESET_UNSPECIFIED = 0;
+  PRESET_NIGHT = 1;
+  PRESET_ECO = 2;
+  PRESET_COMFORT = 3;
+  PRESET_AWAY = 4;
+  PRESET_FREEZE = 5;
+}
+
+enum NodeErrorCode {
+  NODE_ERROR_UNSPECIFIED = 0;
+  NODE_ERROR_OFFLINE = 1;
+  NODE_ERROR_CACHE_NOT_READY = 2;
+  NODE_ERROR_INTERNAL = 3;
+}
+
+enum ResponseErrorCode {
+  RESPONSE_ERROR_UNSPECIFIED = 0;
+  RESPONSE_ERROR_RESPONSE_TIMEOUT = 1;
+  RESPONSE_ERROR_CACHE_NOT_READY = 2;
+}
+
+// ---------------------------------------------------------------- requests
+
+message SendDeviceRequest {
+  bytes mac_address = 1;  // 6 raw bytes
+  uint32 node_id = 2;
+  DeviceRequest request = 3;
+}
+
+message DeviceRequest {
+  oneof type {
+    SystemRequest system = 1;
+    SharedRequest shared = 2;
+    ClimateRequest ac = 3;
+    // 4 = butler (not implemented)
+    ClimateRequest fancoil = 5;
+    ClimateRequest thermostat = 6;
+    // 7 = heatpump (not implemented)
+  }
+}
+
+message SystemRequest {
+  message Reboot {}
+  oneof type {
+    Reboot reboot = 1;
+    // 2 = update_firmware (not implemented)
+  }
+}
+
+message SharedRequest {
+  message GetState {}
+  message SetOperationMode {
+    message Manual {}
+    oneof type {
+      // 1 = calendar (not implemented)
+      Manual manual = 2;
+      // 3 = antifreeze (not implemented)
+    }
+  }
+  oneof type {
+    GetState get_state = 1;
+    // 2 = set_nodes (not implemented)
+    SetOperationMode set_operation_mode = 3;
+  }
+}
+
+// Same layout for ac (which adds erv=6, silent_mode=7), fancoil and thermostat
+message ClimateRequest {
+  message SetState {
+    optional bool power = 1;
+    optional float temperature_setpoint = 2;
+    optional HvacMode hvac_mode = 3;
+    optional FanSpeed fan_speed = 4;
+    optional bool flap_swing = 5;
+    optional bool erv = 6;
+    optional bool silent_mode = 7;
+  }
+  oneof type {
+    SetState set_state = 1;
+  }
+}
+
+// ---------------------------------------------------------------- responses
+
+message SendDeviceResponse {
+  message Error {
+    ResponseErrorCode code = 1;
+    optional string message = 2;
+  }
+  oneof type {
+    Error error = 1;
+    DeviceResponse device = 2;
+    // 3 = service (serial passthrough, not implemented)
+  }
+}
+
+message DeviceResponse {
+  message Empty {}
+  oneof type {
+    SharedResponse shared = 1;
+    Empty ac = 2;
+    Empty fancoil = 3;
+    // 4 = butler
+    Empty thermostat = 5;
+    // 6 = heatpump
+  }
+}
+
+message SharedResponse {
+  message State {
+    optional GatewayState gateway = 1;
+    map<uint32, NodeState> nodes = 2;
+  }
+  oneof type {
+    State state = 1;
+  }
+}
+
+message GatewayState {
+  message Connection {
+    message Wifi {
+      message Network {
+        optional string ssid = 1;
+        optional int32 rssi = 2;
+        optional uint32 snr = 3;
+        optional int32 band = 4;
+      }
+      optional Network network = 1;
+    }
+    message Ethernet {}
+    optional Wifi wifi = 2;
+    optional Ethernet ethernet = 3;
+  }
+  uint32 firmware_version_code = 2;
+  optional string serial_number = 3;
+  optional Connection connection = 4;
+}
+
+message NodeError {
+  NodeErrorCode code = 1;
+}
+
+message NodeState {
+  oneof type {
+    AcState ac = 1;
+    ClimateState fancoil = 2;
+    ClimateState thermostat = 3;
+    // 4 = heatpump, 5 = butler (not implemented)
+    NodeError error = 6;
+  }
+}
+
+message Setpoint {
+  float value = 1;
+  float min = 2;
+  float max = 3;
+  float step = 4;
+}
+
+message HvacModeState {
+  HvacMode value = 1;
+  HvacMode actual_value = 2;  // what the unit is doing now, e.g. HEAT while value=AUTO
+  repeated HvacMode capabilities = 3;
+}
+
+message FanSpeedState {
+  FanSpeed value = 1;
+  repeated FanSpeed capabilities = 2;
+}
+
+message OperationMode {
+  message Calendar {
+    Preset active_preset = 1;
+  }
+  OperationModeType active = 1;
+  optional Calendar calendar = 2;
+  // 3 = manual, 4 = antifreeze configuration (not implemented)
+}
+
+// Full state of a fancoil or thermostat node, as returned by shared.get_state
+message ClimateState {
+  uint32 alarms = 1;
+  bool power = 2;
+  optional Setpoint temperature_setpoint = 3;
+  optional HvacModeState hvac_mode = 4;
+  optional FanSpeedState fan_speed = 5;
+  optional bool flap_swing = 6;
+  float air_temperature = 7;
+  optional float air_humidity = 8;
+  optional OperationMode operation_mode = 9;
+}
+
+// Full state of an air conditioner node: like ClimateState plus erv/silent_mode,
+// with operation_mode moved to 10
+message AcState {
+  uint32 alarms = 1;
+  bool power = 2;
+  optional Setpoint temperature_setpoint = 3;
+  optional HvacModeState hvac_mode = 4;
+  optional FanSpeedState fan_speed = 5;
+  optional bool flap_swing = 6;
+  float air_temperature = 7;
+  optional float air_humidity = 8;
+  optional bool erv = 9;
+  optional OperationMode operation_mode = 10;
+  optional bool silent_mode = 11;
+}
+
+// ---------------------------------------------------------------- events
+
+message SubscribeEventsRequest {
+  bytes home_id = 1;  // 16 raw UUID bytes
+}
+
+message Event {
+  message Device {
+    bytes mac_address = 1;
+    optional uint32 node_id = 2;
+    optional DeviceEvent event = 3;
+  }
+  oneof type {
+    Device device = 1;
+  }
+}
+
+message DeviceEvent {
+  message System {
+    message ConnectionEstablished {}
+    message ConnectionLost {}
+    oneof type {
+      ConnectionEstablished connection_established = 1;
+      ConnectionLost connection_lost = 2;
+      // 3 = provisioning_completed
+    }
+  }
+  message State {
+    oneof type {
+      // 1 = gateway
+      AcEvent ac = 2;
+      ClimateEvent fancoil = 3;
+      // 4 = butler
+      ClimateEvent thermostat = 5;
+      // 6 = heatpump
+    }
+  }
+  oneof type {
+    System system = 1;
+    // 2 = diagnostic (logs)
+    State device = 3;
+  }
+}
+
+message ClimateEventSetpoint {
+  optional float value = 1;
+  optional float min = 2;
+  optional float max = 3;
+  optional float step = 4;
+}
+
+// Partial update for a fancoil/thermostat node: only changed fields are present
+message ClimateEvent {
+  optional uint32 alarms = 1;
+  optional bool power = 2;
+  optional ClimateEventSetpoint temperature_setpoint = 3;
+  optional float air_temperature = 4;
+  optional HvacMode hvac_mode = 5;
+  optional FanSpeed fan_speed = 6;
+  optional bool flap_swing = 7;
+  optional OperationMode operation_mode = 8;
+  optional float air_humidity = 9;
+}
+
+// Partial update for an air conditioner node
+message AcEvent {
+  optional uint32 alarms = 1;
+  optional bool power = 2;
+  optional ClimateEventSetpoint temperature_setpoint = 3;
+  optional float air_temperature = 4;
+  optional HvacMode hvac_mode = 5;
+  optional FanSpeed fan_speed = 6;
+  optional bool flap_swing = 7;
+  optional bool erv = 8;
+  optional OperationMode operation_mode = 9;
+  optional float air_humidity = 10;
+  optional bool silent_mode = 11;
+}

@@ -11,13 +11,9 @@
       },
       "device": {
         "title": "Selecteer Apparaat",
-        "description": "Kies je apparaat en specificeer het modeltype",
+        "description": "Kies het apparaat om toe te voegen",
         "data": {
-          "mac_address": "Apparaat",
-          "device_type": "Apparaatmodel"
-        },
-        "data_description": {
-          "device_type": "Selecteer je apparaatmodel (Fancoil/Osmo ondersteunt alleen Auto/Verwarmen/Koelen, geen Droog-modus)"
+          "device": "Apparaat"
         }
       },
       "reauth_confirm": {
