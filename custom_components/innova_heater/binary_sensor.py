@@ -69,7 +69,7 @@ class InnovaHeaterCalendarSensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.data.get("calendar_active") is not None
+        return super().available and self.coordinator.data.get("calendar_active") is not None
 
 
 class InnovaHeaterKeyboardLockSensor(CoordinatorEntity, BinarySensorEntity):
@@ -100,7 +100,7 @@ class InnovaHeaterKeyboardLockSensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.data.get("keyboard_lock") is not None
+        return super().available and self.coordinator.data.get("keyboard_lock") is not None
 
 
 class InnovaHeaterHotelModeSensor(CoordinatorEntity, BinarySensorEntity):
@@ -130,4 +130,4 @@ class InnovaHeaterHotelModeSensor(CoordinatorEntity, BinarySensorEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        return self.coordinator.data.get("hotel_mode") is not None
+        return super().available and self.coordinator.data.get("hotel_mode") is not None

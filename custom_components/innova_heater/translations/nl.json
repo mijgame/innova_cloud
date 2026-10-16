@@ -19,15 +19,25 @@
         "data_description": {
           "device_type": "Selecteer je apparaatmodel (Fancoil/Osmo ondersteunt alleen Auto/Verwarmen/Koelen, geen Droog-modus)"
         }
+      },
+      "reauth_confirm": {
+        "title": "Innova Cloud opnieuw aanmelden",
+        "description": "Je Innova Cloud-sessie is verlopen. Voer je accountgegevens opnieuw in.",
+        "data": {
+          "email": "E-mailadres",
+          "password": "Wachtwoord"
+        }
       }
     },
     "error": {
       "invalid_auth": "Ongeldig e-mailadres of wachtwoord",
       "no_devices": "Geen apparaten gevonden op je account",
-      "unknown": "Onverwachte fout opgetreden"
+      "unknown": "Onverwachte fout opgetreden",
+      "cannot_connect": "Kan geen verbinding maken met Innova Cloud"
     },
     "abort": {
-      "already_configured": "Apparaat is al geconfigureerd"
+      "already_configured": "Apparaat is al geconfigureerd",
+      "reauth_successful": "Opnieuw aanmelden is gelukt"
     }
   }
 }

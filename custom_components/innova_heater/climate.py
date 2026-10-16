@@ -116,8 +116,8 @@ class InnovaHeaterClimate(CoordinatorEntity, ClimateEntity):
     @property
     def available(self) -> bool:
         """Return if entity is available."""
-        # Entity is available if we have any temperature data
-        return (
+        # Entity is available if the last cloud sync succeeded and we have any temperature data
+        return super().available and (
             self.coordinator.data.get("current_temp") is not None
             or self.coordinator.data.get("target_temp") is not None
         )

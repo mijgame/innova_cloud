@@ -7,9 +7,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, OP_TYPE_REBOOT
+from .const import DOMAIN
 from .coordinator import InnovaHeaterCoordinator
-from . import controls_pb2
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,20 +48,5 @@ class InnovaHeaterRebootButton(CoordinatorEntity, ButtonEntity):
 
     async def async_press(self) -> None:
         """Handle button press - reboot the device."""
-        try:
-            metadata = [
-                ("mac_address", self.coordinator.mac_address),
-                ("authorization", f"Bearer {self.coordinator.token}"),
-            ]
-            
-            request = controls_pb2.SetDeviceValueRequest(
-                type=OP_TYPE_REBOOT,
-                value=1
-            )
-            
-            await self.coordinator.stub.SetDeviceValue(request, metadata=metadata)
-            _LOGGER.info("Device reboot initiated")
-            
-        except Exception as err:
-            _LOGGER.error("Failed to reboot device: %s", err)
-            raise
+        await self.coordinator.async_reboot()
+        _LOGGER.info("Device reboot initiated")
