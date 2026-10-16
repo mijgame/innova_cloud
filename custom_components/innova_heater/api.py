@@ -15,6 +15,7 @@ async def validate_login(hass: HomeAssistant, email: str, password: str) -> dict
     Network errors (aiohttp.ClientError, TimeoutError) are raised to the caller.
     """
     session = async_get_clientsession(hass)
+    email = email.strip()
 
     async with session.post(
         f"{API_BASE_URL}/users/login",
@@ -29,7 +30,11 @@ async def validate_login(hass: HomeAssistant, email: str, password: str) -> dict
                 "user": data.get("user", {})
             }
         # The API answers bad credentials with HTTP 500 / {"code": 402, ...}
-        _LOGGER.warning("Login rejected with HTTP status %s", response.status)
+        _LOGGER.warning(
+            "Login rejected with HTTP status %s: %s",
+            response.status,
+            (await response.text())[:200],
+        )
 
     return None
 

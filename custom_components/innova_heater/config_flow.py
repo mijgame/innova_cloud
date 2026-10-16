@@ -48,7 +48,7 @@ class InnovaHeaterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                 if result and result.get("token"):
                     self.token = result["token"]
-                    self.email = user_input[CONF_EMAIL]
+                    self.email = user_input[CONF_EMAIL].strip()
                     self.password = user_input[CONF_PASSWORD]
                     self.devices = await get_devices(self.hass, self.token)
 
@@ -130,7 +130,7 @@ class InnovaHeaterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_update_reload_and_abort(
                         reauth_entry,
                         data_updates={
-                            CONF_EMAIL: user_input[CONF_EMAIL],
+                            CONF_EMAIL: user_input[CONF_EMAIL].strip(),
                             CONF_PASSWORD: user_input[CONF_PASSWORD],
                             "token": result["token"],
                         },
